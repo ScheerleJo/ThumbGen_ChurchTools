@@ -1,0 +1,27 @@
+{
+  "name": "thumbgen-churchtools",
+  "version": "1.0.0",
+  "description": "A tool, to automatically create thumbnail for livestreams based on events in ChurchTools",
+  "homepage": "https://github.com/ScheerleJo/thumbGen-ChurchTools#readme",
+  "bugs": {
+    "url": "https://github.com/ScheerleJo/thumbGen-ChurchTools/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ScheerleJo/thumbGen-ChurchTools.git"
+  },
+  "license": "MIT",
+  "author": "ScheerleJO",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@churchtools/churchtools-client": "^1.3.12",
+    "axios": "^1.8.4",
+    "axios-cookiejar-support": "^5.0.5",
+    "canvas": "^3.1.0",
+    "dotenv": "^16.4.7"
+  }
+}
