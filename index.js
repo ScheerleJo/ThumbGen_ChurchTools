@@ -36,6 +36,12 @@ async function getEventAgenda(eventId) {
     return agenda;
 }
 
+async function getResponsiblePerson(agendaEntry) {
+    if(!agendaEntry.responsible.text.includes('[')) return agendaEntry.text;
+    let responsible = agendaEntry.responsible.persons[0].person.title
+    if(responsible) return responsible;
+
+}
 
 async function formatEvents(events) {
     let formattedEvents = {};

@@ -1,0 +1,4 @@
+{
+    "title": "{{sermonSubject}} - {{eventName}} am {{eventDate}}",
+    "description": "Livestream vom Gottesdienst am {{eventDate}} aus der Kirche der evangelischen Kirchengemeinde Hohenhaslach um 09:45 Uhr.\nPrediger ist {{preacher}}, der zum Thema \"{{sermonSubject}}\" spricht.\nDen Predigttext in {{scripture}} zum nachlesen gibt es hier: {{scriptureLink}}\n\nVielen Dank an alle, die mitgeholfen haben, dass dieser Gottesdienst stattfinden kann!\n\n----------------------------------------------------------------------------------\n\nHomepage: https://www.gemeinde.hohenhaslach.elk-wue.de/\nInstagram: https://www.instagram.com/kirchengemeinde_hohenhaslach/\n\nGesamtkirche: https://zusammenfinden-sachsenheim.de/"
+}
