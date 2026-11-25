@@ -1,97 +1,116 @@
-const { churchtoolsClient, activateLogging } = require('@churchtools/churchtools-client');
-const axiosCookieJarSupport = require('axios-cookiejar-support');
-const tough = require('tough-cookie');
-require('dotenv').config();
-const canvas = require('./canvas');
+require('dotenv').config({ path: require('path').join(__dirname, '.env'), quiet: true });
+const { parseArgs } = require('util');
+const ct = require('./churchtools');
+const sync = require('./sync');
+const text = require('./text');
 
-churchtoolsClient.setCookieJar(axiosCookieJarSupport.wrapper, new tough.CookieJar());
-churchtoolsClient.setBaseUrl(process.env.BASE_URL);
+const HELP = `Verwendung: node index.js [Optionen]
 
-activateLogging();
+  --watch           Dauerhaft laufen und ChurchTools regelmäßig prüfen
+  --interval <min>  Prüfintervall im Watch-Modus (Standard: WATCH_INTERVAL_MINUTES oder 15)
+  --days <n>        Events von heute bis in n Tagen (Standard: 7)
+  --event <id>      Nur dieses Event (ID aus ChurchTools)
+  --dry-run         Nur anzeigen, was passieren würde, nichts schreiben
+  --force           Auch Events mit nicht abgeschlossener Agenda / ohne Thema rendern
+  --rebuild         Alle Thumbnails neu erzeugen, auch wenn sich nichts geändert hat
+  --demo            Ohne ChurchTools Beispiel-Thumbnails rendern
+  --verbose         HTTP-Logging des ChurchTools-Clients
+  --help            Diese Hilfe`;
 
-async function login(client, user) {
-    let result = await client.post('/login', user)
-    if (result.status === 'success') {
-        console.log('Login successful!');
-        return true;
-    } else {
-        console.log('Login failed! Exiting...');
-        process.exit(1);
+function timestamp() {
+    return new Date().toLocaleString('de-DE', { timeZone: process.env.TIMEZONE || 'Europe/Berlin' });
+}
+
+async function runDemo() {
+    const base = {
+        isoDate: '2026-05-14', date: '14.05.2026', startTime: '09:45', eventName: 'Gottesdienst',
+        sermonSubject: 'Der letzte Wille von Jesus: Einheit', preacher: 'Max Mustermann',
+        scripture: 'Johannes 17,20-26', scriptureLink: text.bibleserverLink('Johannes 17,20-26'),
+    };
+    for (const info of [base, { ...base, eventName: 'Familiengottesdienst', sermonSubject: 'Gemeinsam unterwegs' }]) {
+        const output = sync.buildOutput(info);
+        await sync.writeOutput(info, output);
+        console.log(`-> ${output.image} | ${output.title}`);
     }
 }
 
-async function getEvents() {
-    // let fromDate = new Date(new Date().setDate(new Date().getDate() + 1)).toISOString().split('T')[0];
-    // let toDate = new Date(new Date().setDate(new Date().getDate() + 7)).toISOString().split('T')[0]; 
-    const events = await churchtoolsClient.get(`/events`);
-    // console.log('Events:', events);
-    return await formatEvents(events);
+async function runCycle(args, log) {
+    await ct.login({
+        loginToken: process.env.CT_LOGIN_TOKEN,
+        username: process.env.CT_USERNAME,
+        password: process.env.CT_PASSWORD,
+    });
+    const stats = await sync.syncOnce({
+        days: Number(args.days),
+        eventId: args.event,
+        dryRun: args['dry-run'],
+        force: args.force,
+        rebuild: args.rebuild,
+        sermonItemTitle: process.env.SERMON_ITEM_TITLE,
+        log,
+    });
+    log(`Fertig: ${stats.created} neu, ${stats.updated} aktualisiert, ${stats.removed} entfernt, `
+        + `${stats.unchanged} unverändert, ${stats.skipped} übersprungen, ${stats.failed} Fehler.`);
+    return stats;
 }
 
-async function getEventAgenda(eventId) {
-    const agenda = await churchtoolsClient.get(`/events/${eventId}/agenda`);
-    console.log('Agenda:', agenda);
-    return agenda;
+async function watch(args) {
+    const minutes = Number(args.interval || process.env.WATCH_INTERVAL_MINUTES || 15);
+    if (!(minutes > 0)) throw new Error('Ungültiges Intervall: ' + args.interval);
+    const log = msg => console.log(`[${timestamp()}] ${msg}`);
+    log(`Watch-Modus: prüfe alle ${minutes} Minuten (Strg+C zum Beenden).`);
+
+    let timer = null;
+    let stopping = false;
+    const stop = () => {
+        if (stopping) return;
+        stopping = true;
+        clearTimeout(timer);
+        log('Beendet.');
+    };
+    process.on('SIGINT', stop);
+    process.on('SIGTERM', stop);
+
+    let rebuild = args.rebuild; // --rebuild nur beim ersten Durchlauf
+    const tick = async () => {
+        try {
+            await runCycle({ ...args, rebuild }, log);
+        } catch (err) {
+            // z. B. Netzwerk weg oder Login abgelaufen – beim nächsten Durchlauf erneut versuchen
+            log(`Fehler beim Abgleich: ${err.message}`);
+        }
+        rebuild = false;
+        if (!stopping) timer = setTimeout(tick, minutes * 60 * 1000);
+    };
+    await tick();
 }
 
-function getResponsiblePerson(agendaItem) {
-    if(!agendaItem.responsible.text.includes('[')) return agendaItem.text;
-    if(agendaItem.responsible.personns[0].accepted) return agendaItem.responsible.persons[0].person.title
-    throw Error("No user or not accepted user in service: " + agendaItem.responsible.persons[0].service)
+async function main() {
+    const { values: args } = parseArgs({
+        options: {
+            watch: { type: 'boolean', default: false },
+            interval: { type: 'string' },
+            days: { type: 'string', default: '7' },
+            event: { type: 'string' },
+            'dry-run': { type: 'boolean', default: false },
+            force: { type: 'boolean', default: false },
+            rebuild: { type: 'boolean', default: false },
+            demo: { type: 'boolean', default: false },
+            verbose: { type: 'boolean', default: false },
+            help: { type: 'boolean', default: false },
+        },
+    });
+    if (args.help) return console.log(HELP);
+    if (args.demo) return runDemo();
+
+    ct.init({ baseUrl: process.env.CT_BASE_URL, verbose: args.verbose });
+    if (args.watch) return watch(args);
+
+    const stats = await runCycle(args, console.log);
+    if (stats.failed) process.exitCode = 1;
 }
 
-function getSermonInfo(agendaItem) {
-    if(agendaItem.note) {
-        let infos = agendaItem.note.split('\n');
-        infos[0] = infos[0].replace('Predigttext:', '').trim()
-        infos[1] = infos[1].replace('Thema:', '').trim()
-        return infos;
-    }
-}
-
-
-async function formatEvents(events) {
-    let formattedEvents = [];
-    for(let i = 0; i < events.length; i++) {
-        if (!events[i].note.includes('streaming: ja')) {
-            console.log("No Livestream. Skipping event:", events[i].name);
-            continue;
-        } 
-
-        formattedEvents.push({
-            date: new Date(events[i].startDate).toLocaleDateString('de-DE', { year: 'numeric', month: '2-digit', day: '2-digit' }),
-            eventName: selectEvent(events[i].name),
-            sermonSubject: '',
-            startTime: new Date(events[i].startDate).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }),
-            preacher: '',
-            scripture: '',
-            scriptureLink: '',
-            specialties: []
-        })
-    }
-    return formattedEvents;
-}
-
-function selectEvent(eventName) {
-    if (eventName.includes("Familien")) return 'Familiengottesdienst';
-    else if (eventName.includes("Jugend")) return 'Jugendgottesdienst';
-    else return 'Gottesdienst';
-}
-
-const user = {
-    username: process.env.USER,
-    password: process.env.PASSWORD
-}
-
-login(churchtoolsClient, user)
-
-getEvents().then(events => {
-    const eventList = events;
-    console.log("Events:", eventList);
-    canvas.create({
-        date: eventList[0].date,
-        event: eventList[0].eventName,
-        subject: eventList[0].sermonSubject
-    })
+main().catch(err => {
+    console.error('Fehler:', err.message);
+    process.exit(1);
 });
-// getEventAgenda(191);
