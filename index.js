@@ -3,6 +3,7 @@ const { parseArgs } = require('util');
 const ct = require('./churchtools');
 const sync = require('./sync');
 const text = require('./text');
+const youtube = require('./youtube');
 
 const HELP = `Verwendung: node index.js [Optionen]
 
@@ -14,6 +15,8 @@ const HELP = `Verwendung: node index.js [Optionen]
   --force           Auch Events mit nicht abgeschlossener Agenda / ohne Thema rendern
   --rebuild         Alle Thumbnails neu erzeugen, auch wenn sich nichts geändert hat
   --demo            Ohne ChurchTools Beispiel-Thumbnails rendern
+  --youtube-auth    Einmalig bei YouTube anmelden (speichert den Zugang)
+  --youtube-streams Stream-Keys des Kanals auflisten (für YOUTUBE_STREAM_ID)
   --verbose         HTTP-Logging des ChurchTools-Clients
   --help            Diese Hilfe`;
 
@@ -35,6 +38,10 @@ async function runDemo() {
 }
 
 async function runCycle(args, log) {
+    if (youtube.isEnabled()) {
+        youtube.settings(); // Konfiguration prüfen
+        youtube.api(); // wirft, wenn noch nicht autorisiert
+    }
     await ct.login({
         loginToken: process.env.CT_LOGIN_TOKEN,
         username: process.env.CT_USERNAME,
@@ -50,7 +57,8 @@ async function runCycle(args, log) {
         log,
     });
     log(`Fertig: ${stats.created} neu, ${stats.updated} aktualisiert, ${stats.removed} entfernt, `
-        + `${stats.unchanged} unverändert, ${stats.skipped} übersprungen, ${stats.failed} Fehler.`);
+        + `${stats.unchanged} unverändert, ${stats.skipped} übersprungen, ${stats.failed} Fehler`
+        + (youtube.isEnabled() ? `, ${stats.youtube} YouTube-Änderungen.` : '.'));
     return stats;
 }
 
@@ -96,12 +104,21 @@ async function main() {
             force: { type: 'boolean', default: false },
             rebuild: { type: 'boolean', default: false },
             demo: { type: 'boolean', default: false },
+            'youtube-auth': { type: 'boolean', default: false },
+            'youtube-streams': { type: 'boolean', default: false },
             verbose: { type: 'boolean', default: false },
             help: { type: 'boolean', default: false },
         },
     });
     if (args.help) return console.log(HELP);
     if (args.demo) return runDemo();
+    if (args['youtube-auth']) return youtube.authorize();
+    if (args['youtube-streams']) {
+        const streams = await youtube.listStreams();
+        if (!streams.length) console.log('Keine Streams gefunden.');
+        for (const st of streams) console.log(`${st.id}  ${st.title}  (${st.resolution || '?'}, ${st.frameRate || '?'})`);
+        return;
+    }
 
     ct.init({ baseUrl: process.env.CT_BASE_URL, verbose: args.verbose });
     if (args.watch) return watch(args);
