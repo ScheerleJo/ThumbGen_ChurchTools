@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ThumbGen – Livestream-Dashboard</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <div>
+                <h1>Livestream-Dashboard</h1>
+                <p id="sync-info" class="muted">Lade …</p>
+            </div>
+        </div>
+        <div class="topbar-actions">
+            <span id="status-pill" class="pill">–</span>
+            <button id="sync-btn" class="btn primary" type="button">Jetzt abgleichen</button>
+        </div>
+    </header>
+
+    <main>
+        <div id="alerts"></div>
+        <section id="events" aria-live="polite"></section>
+
+        <details id="other-events" class="panel" hidden>
+            <summary>Ohne Livestream <span id="other-count" class="muted"></span></summary>
+            <ul id="other-list" class="plain-list"></ul>
+        </details>
+
+        <details class="panel">
+            <summary>Protokoll</summary>
+            <pre id="log" class="log"></pre>
+        </details>
+    </main>
+
+    <template id="event-template">
+        <article class="event">
+            <div class="event-media">
+                <img class="thumb" alt="">
+                <div class="thumb-empty">Noch kein Thumbnail</div>
+            </div>
+            <div class="event-body">
+                <div class="event-head">
+                    <div>
+                        <p class="event-when"></p>
+                        <h2 class="event-name"></h2>
+                    </div>
+                    <div class="badges"></div>
+                </div>
+                <div class="problems"></div>
+                <dl class="fields"></dl>
+                <div class="youtube"></div>
+                <div class="actions">
+                    <button class="btn edit-btn" type="button">Anpassen</button>
+                </div>
+                <details class="details">
+                    <summary>ChurchTools-Daten &amp; YouTube-Texte</summary>
+                    <div class="details-body"></div>
+                </details>
+            </div>
+            <form class="editor" hidden>
+                <div class="editor-grid">
+                    <div class="editor-fields">
+                        <label>Thema
+                            <textarea name="sermonSubject" rows="3"></textarea>
+                            <small>Enter = eigener Zeilenumbruch im Thumbnail. Leer lassen = Wert aus ChurchTools.</small>
+                        </label>
+                        <label>Art des Gottesdienstes
+                            <input name="eventName" list="event-types" autocomplete="off">
+                            <small>Bestimmt Überschrift und Hintergrund.</small>
+                        </label>
+                        <label>Prediger
+                            <input name="preacher" autocomplete="off">
+                        </label>
+                        <label>Predigttext
+                            <input name="scripture" autocomplete="off">
+                        </label>
+                        <label class="check force-row" hidden>
+                            <input type="checkbox" name="force">
+                            Trotz fehlender/offener Agenda erzeugen
+                        </label>
+                    </div>
+                    <div class="editor-preview">
+                        <img class="preview" alt="Vorschau des angepassten Thumbnails">
+                        <p class="preview-state muted">Vorschau</p>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button class="btn primary" type="submit">Speichern &amp; anwenden</button>
+                    <button class="btn reset-btn" type="button">Auf ChurchTools-Werte zurücksetzen</button>
+                    <button class="btn ghost cancel-btn" type="button">Abbrechen</button>
+                </div>
+            </form>
+        </article>
+    </template>
+
+    <datalist id="event-types"></datalist>
+    <script src="/app.js"></script>
+</body>
+</html>

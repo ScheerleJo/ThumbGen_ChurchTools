@@ -27,7 +27,8 @@ function font(sizePx) {
 }
 
 function selectBackground(eventType) {
-    const file = eventType.toLowerCase() + '.png';
+    // Nur einfache Dateinamen zulassen (Art kann im Dashboard frei eingegeben werden)
+    const file = eventType.toLowerCase().replace(/[^a-z0-9äöüß_-]/g, '') + '.png';
     const candidate = path.join(ASSETS, 'backgrounds', file);
     return fs.existsSync(candidate) ? candidate : path.join(ASSETS, 'backgrounds', 'default.png');
 }
@@ -45,6 +46,16 @@ function* splits(words, n) {
  * Wenn er auch auf maxLines nicht passt, wird die Schrift verkleinert.
  */
 function wrapBalanced(ctx, text, { size, maxWidth, maxLines, minSize }) {
+    // Manuelle Zeilenumbrüche (aus dem Dashboard) haben Vorrang; dann nur noch die Größe anpassen
+    if (text.includes('\n')) {
+        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+        const manualMaxWidth = 1250; // etwas mehr Platz als beim Automatik-Umbruch, aber nicht bis ins Logo
+        for (let s = size; s >= minSize; s -= 5) {
+            ctx.font = font(s);
+            if (Math.max(...lines.map(l => ctx.measureText(l).width)) <= manualMaxWidth) return { size: s, lines };
+        }
+        text = lines.join(' '); // passt nicht -> doch automatisch umbrechen
+    }
     const words = text.split(/\s+/).filter(Boolean);
     for (let s = size; s >= minSize; s -= 5) {
         ctx.font = font(s);
@@ -98,22 +109,33 @@ function writeText(ctx, { date, event, subject }) {
     ctx.restore();
 }
 
+/** Verfügbare Hintergründe (Dateinamen ohne .png), z. B. für die Auswahl im Dashboard. */
+function listBackgrounds() {
+    return fs.readdirSync(path.join(ASSETS, 'backgrounds'))
+        .filter(f => f.toLowerCase().endsWith('.png'))
+        .map(f => f.slice(0, -4));
+}
+
 /**
- * Rendert ein Thumbnail und schreibt es als JPEG.
+ * Rendert ein Thumbnail als JPEG-Buffer.
  * @param {{date: string, event: string, subject?: string}} info
- * @param {string} outFile Zielpfad
  */
-async function create(info, outFile) {
+async function render(info) {
     const thumbnail = createCanvas(WIDTH, HEIGHT);
     const ctx = thumbnail.getContext('2d');
 
     ctx.drawImage(await loadImage(selectBackground(info.event)), 0, 0, WIDTH, HEIGHT);
     ctx.drawImage(await loadImage(path.join(ASSETS, 'logo.png')), 0, 0, WIDTH, HEIGHT);
     writeText(ctx, info);
+    return thumbnail.toBuffer('image/jpeg', { quality: 0.92 });
+}
 
+/** Rendert ein Thumbnail und schreibt es als JPEG nach outFile. */
+async function create(info, outFile) {
+    const buffer = await render(info);
     fs.mkdirSync(path.dirname(outFile), { recursive: true });
-    fs.writeFileSync(outFile, thumbnail.toBuffer('image/jpeg', { quality: 0.92 }));
+    fs.writeFileSync(outFile, buffer);
     return outFile;
 }
 
-module.exports = { create, selectBackground, RENDER_VERSION };
+module.exports = { create, render, selectBackground, listBackgrounds, RENDER_VERSION };

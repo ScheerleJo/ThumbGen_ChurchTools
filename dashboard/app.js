@@ -1,0 +1,388 @@
+'use strict';
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const FIELDS = [
+    ['sermonSubject', 'Thema'],
+    ['eventName', 'Art'],
+    ['preacher', 'Prediger'],
+    ['scripture', 'Predigttext'],
+];
+const STATUS = {
+    'neu': ['Thumbnail erstellt', 'ok'],
+    'aktualisiert': ['Thumbnail aktualisiert', 'ok'],
+    'unverändert': ['Thumbnail aktuell', 'ok'],
+    'übersprungen': ['Kein Thumbnail', 'warn'],
+    'fehler': ['Fehler', 'err'],
+};
+const PRIVACY = {
+    public: ['Öffentlich', 'ok'],
+    unlisted: ['Nicht gelistet', 'warn'],
+    private: ['Privat', 'err'],
+};
+const LIFECYCLE = {
+    created: 'geplant', ready: 'geplant', testing: 'Test läuft', testStarting: 'Test startet',
+    liveStarting: 'startet', live: 'LIVE', complete: 'beendet', revoked: 'gesperrt',
+};
+
+let state = { status: null, events: [], openEditor: null };
+
+// ---------- API ----------
+async function api(method, url, body) {
+    const res = await fetch(url, {
+        method,
+        headers: { 'X-ThumbGen': '1', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return res.headers.get('content-type')?.includes('json') ? res.json() : res.blob();
+}
+
+// ---------- Hilfsfunktionen ----------
+function el(tag, props = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(props)) {
+        if (key === 'class') node.className = value;
+        else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+        else if (value !== undefined && value !== null && value !== false) node.setAttribute(key, value === true ? '' : value);
+    }
+    for (const child of children.flat()) {
+        if (child !== null && child !== undefined && child !== false) node.append(child);
+    }
+    return node;
+}
+
+const pill = (label, kind = '') => el('span', { class: `pill ${kind}` }, label);
+
+function formatWhen(iso) {
+    const d = new Date(iso);
+    const day = d.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Europe/Berlin' });
+    const time = d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin' });
+    return `${day}, ${time} Uhr`;
+}
+
+function formatAgo(iso) {
+    if (!iso) return 'noch nie';
+    const minutes = Math.round((Date.now() - new Date(iso)) / 60000);
+    if (minutes < 1) return 'gerade eben';
+    if (minutes < 60) return `vor ${minutes} Min.`;
+    return new Date(iso).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function showAlert(message, kind = '') {
+    const box = el('div', { class: `alert ${kind}`, role: 'alert' }, message);
+    $('#alerts').append(box);
+    setTimeout(() => box.remove(), 8000);
+}
+
+async function withBusy(buttons, fn) {
+    buttons.forEach(b => { b.disabled = true; });
+    try {
+        return await fn();
+    } catch (err) {
+        showAlert(err.message);
+    } finally {
+        buttons.forEach(b => { b.disabled = false; });
+    }
+}
+
+function openLightbox(src) {
+    const dialog = el('dialog', { class: 'lightbox', onclick: () => dialog.close(), onclose: () => dialog.remove() },
+        el('img', { src, alt: 'Thumbnail in voller Größe' }));
+    document.body.append(dialog);
+    dialog.showModal();
+}
+
+// ---------- Rendering ----------
+function renderStatus() {
+    const s = state.status;
+    if (!s) return;
+    const pillEl = $('#status-pill');
+    if (s.running) {
+        pillEl.className = 'pill info running';
+        pillEl.textContent = 'Abgleich läuft';
+    } else if (s.lastError) {
+        pillEl.className = 'pill err';
+        pillEl.textContent = 'Fehler';
+        pillEl.title = s.lastError;
+    } else {
+        pillEl.className = 'pill ok';
+        pillEl.textContent = 'Bereit';
+        pillEl.title = '';
+    }
+    $('#sync-btn').disabled = s.running;
+    const range = s.range ? ` · Zeitraum ${s.range.from} bis ${s.range.to}` : '';
+    const yt = s.youtube.enabled ? `YouTube aktiv (neue Livestreams: ${PRIVACY[s.youtube.privacyDefault]?.[0] || s.youtube.privacyDefault})` : 'YouTube aus';
+    $('#sync-info').textContent = `Letzter Abgleich ${formatAgo(s.lastSync)}${range} · ${yt}`;
+    $('#log').textContent = s.log.join('\n') || 'Noch keine Einträge.';
+
+    const types = new Set(['Gottesdienst', 'Familiengottesdienst', 'Jugendgottesdienst',
+        ...s.backgrounds.filter(b => b !== 'default').map(b => b[0].toUpperCase() + b.slice(1))]);
+    $('#event-types').replaceChildren(...[...types].map(t => el('option', { value: t })));
+}
+
+function renderEvents() {
+    const container = $('#events');
+    const streamed = state.events.filter(e => e.streamed && !e.canceled);
+    const others = state.events.filter(e => !e.streamed || e.canceled);
+
+    if (!state.events.length) {
+        container.replaceChildren(el('div', { class: 'empty' },
+            'Noch keine Daten. Klicke auf „Jetzt abgleichen“, um die Events aus ChurchTools zu laden.'));
+    } else if (!streamed.length) {
+        container.replaceChildren(el('div', { class: 'empty' }, 'Im Zeitraum ist kein Event mit Livestream geplant.'));
+    } else {
+        container.replaceChildren(...streamed.map(renderEvent));
+    }
+
+    $('#other-events').hidden = !others.length;
+    $('#other-count').textContent = `(${others.length})`;
+    $('#other-list').replaceChildren(...others.map(e => el('li', {},
+        el('strong', {}, formatWhen(e.startDate)), ' – ', e.name, ' ', pill(e.canceled ? 'abgesagt' : 'kein Livestream'))));
+}
+
+function renderEvent(event) {
+    const node = $('#event-template').content.firstElementChild.cloneNode(true);
+    node.dataset.id = event.id;
+    const info = event.info || {};
+    const ct = event.ctInfo || {};
+    const override = event.override || {};
+
+    // Thumbnail
+    const img = $('.thumb', node);
+    if (event.thumbnail) {
+        img.src = `/api/thumbnail/${encodeURIComponent(event.thumbnail)}?v=${event.fingerprint || ''}`;
+        img.alt = `Thumbnail ${event.name}`;
+        img.addEventListener('click', () => openLightbox(img.src));
+        $('.thumb-empty', node).hidden = true;
+    } else {
+        img.hidden = true;
+    }
+
+    // Kopf
+    $('.event-when', node).textContent = formatWhen(event.startDate);
+    $('.event-name', node).textContent = event.name;
+    const [statusLabel, statusKind] = STATUS[event.status] || [event.status || '–', ''];
+    $('.badges', node).append(...[
+        pill(statusLabel, statusKind),
+        pill(`Agenda ${event.agenda || '–'}`, event.agenda === 'abgeschlossen' ? '' : 'warn'),
+        Object.keys(override).length ? pill('angepasst', 'info') : null,
+    ].filter(Boolean));
+
+    // Probleme
+    const problems = [...event.problems];
+    if (event.status === 'fehler' && event.message) problems.push(event.message);
+    if (problems.length) {
+        let hint = '';
+        if (event.status === 'übersprungen') {
+            hint = ' – über „Anpassen“ kannst du die Werte selbst eintragen und das Thumbnail trotzdem erzeugen.';
+        } else if (event.status !== 'fehler' && event.thumbnail && !event.override?.force) {
+            hint = ' – das bestehende Thumbnail bleibt unverändert, bis die Agenda abgeschlossen ist (oder du es über „Anpassen“ erzwingst).';
+        }
+        $('.problems', node).append(el('div', { class: `alert ${event.status === 'fehler' ? '' : 'warn'}` },
+            problems.join(', ') + hint));
+    }
+
+    // Felder
+    const dl = $('.fields', node);
+    for (const [key, label] of FIELDS) {
+        const value = info[key] || '';
+        const changed = override[key] !== undefined;
+        const dd = el('dd', {}, value || el('span', { class: 'muted' }, '—'));
+        if (key === 'scripture' && value && info.scriptureLink) {
+            dd.replaceChildren(el('a', { href: info.scriptureLink, target: '_blank', rel: 'noopener' }, value));
+        }
+        if (changed) {
+            dd.append(el('span', { class: 'changed' }, 'angepasst'),
+                el('span', { class: 'ct-was' }, `ChurchTools: ${ct[key] || '—'}`));
+        }
+        dl.append(el('dt', {}, label), dd);
+    }
+
+    renderYoutube($('.youtube', node), event);
+
+    // Details
+    const details = $('.details-body', node);
+    const block = (title, content) => el('div', {}, el('h3', {}, title), el('pre', {}, content || '—'));
+    details.append(
+        block('Event-Notiz', event.note),
+        block(`Agenda-Eintrag${event.sermonItem?.title ? ` „${event.sermonItem.title}“` : ''}`,
+            event.sermonItem ? [event.sermonItem.note, event.sermonItem.responsible && `Verantwortlich: ${event.sermonItem.responsible}`].filter(Boolean).join('\n\n') : 'Kein Predigt-Eintrag gefunden'),
+        block('YouTube-Titel', event.title),
+        block('YouTube-Beschreibung', event.description),
+    );
+
+    // Editor
+    const editor = $('.editor', node);
+    const editBtn = $('.edit-btn', node);
+    if (!event.ctInfo) editBtn.hidden = true;
+    editBtn.addEventListener('click', () => toggleEditor(node, event, editor.hidden));
+    if (state.openEditor === event.id) toggleEditor(node, event, true);
+    return node;
+}
+
+function renderYoutube(box, event) {
+    if (!state.status?.youtube.enabled) return;
+    if (!event.youtubeId) {
+        box.append(el('span', { class: 'label' }, 'YouTube'), el('span', { class: 'muted' },
+            event.thumbnail ? 'Livestream wird beim nächsten Abgleich angelegt' : 'Noch kein Livestream'));
+        return;
+    }
+    const yt = event.youtube || {};
+    if (yt.missing) {
+        box.append(el('span', { class: 'label' }, 'YouTube'),
+            pill('auf YouTube gelöscht', 'err'),
+            el('span', { class: 'muted' }, 'wird beim nächsten geänderten Abgleich neu angelegt'));
+        return;
+    }
+    const [privacyLabel, privacyKind] = PRIVACY[yt.privacy] || [yt.privacy || '?', ''];
+    const lifecycle = LIFECYCLE[yt.lifeCycle] || yt.lifeCycle;
+    box.append(...[
+        el('span', { class: 'label' }, 'YouTube'),
+        pill(privacyLabel, privacyKind),
+        lifecycle ? pill(lifecycle, yt.lifeCycle === 'live' ? 'err' : '') : null,
+        el('a', { href: yt.watchUrl, target: '_blank', rel: 'noopener' }, 'Ansehen'),
+        el('a', { href: yt.studioUrl, target: '_blank', rel: 'noopener' }, 'YouTube Studio'),
+        el('span', { class: 'spacer' }),
+    ].filter(Boolean));
+    if (yt.lifeCycle === 'complete' || yt.lifeCycle === 'revoked') return;
+
+    const setPrivacy = (privacy, confirmText) => async e => {
+        if (confirmText && !confirm(confirmText)) return;
+        await withBusy([e.currentTarget], async () => {
+            await api('POST', `/api/events/${event.id}/privacy`, { privacy });
+            await loadEvents();
+        });
+    };
+    if (yt.privacy !== 'public') {
+        box.append(el('button', {
+            class: 'btn small publish', type: 'button',
+            onclick: setPrivacy('public', `„${yt.title}“ jetzt öffentlich schalten?\n\nDer Livestream erscheint dann auf dem Kanal und in der Suche.`),
+        }, 'Öffentlich schalten'));
+    } else {
+        box.append(el('button', { class: 'btn small', type: 'button', onclick: setPrivacy('unlisted') }, 'Auf nicht gelistet'));
+    }
+}
+
+// ---------- Editor ----------
+function formValues(form) {
+    const values = {};
+    for (const [key] of FIELDS) values[key] = form.elements[key].value;
+    values.force = form.elements.force.checked;
+    return values;
+}
+
+function toggleEditor(node, event, open) {
+    const form = $('.editor', node);
+    const editBtn = $('.edit-btn', node);
+    form.hidden = !open;
+    editBtn.textContent = open ? 'Anpassen schließen' : 'Anpassen';
+    state.openEditor = open ? event.id : (state.openEditor === event.id ? null : state.openEditor);
+    if (!open || form.dataset.ready) return;
+    form.dataset.ready = '1';
+
+    const ct = event.ctInfo;
+    const override = event.override || {};
+    for (const [key] of FIELDS) {
+        const input = form.elements[key];
+        input.value = override[key] || '';
+        input.placeholder = ct[key] || '';
+    }
+    const needsForce = event.problems.some(p => p.includes('Agenda')) || override.force;
+    $('.force-row', form).hidden = !needsForce;
+    form.elements.force.checked = Boolean(override.force);
+    $('.reset-btn', form).hidden = !Object.keys(override).length;
+
+    // Live-Vorschau
+    const previewImg = $('.preview', form);
+    const previewState = $('.preview-state', form);
+    let timer = null;
+    let counter = 0;
+    const refresh = () => {
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+            const current = ++counter;
+            previewState.textContent = 'Vorschau wird erstellt …';
+            try {
+                const blob = await api('POST', `/api/events/${event.id}/preview`, formValues(form));
+                if (current !== counter) return;
+                if (previewImg.src) URL.revokeObjectURL(previewImg.src);
+                previewImg.src = URL.createObjectURL(blob);
+                previewState.textContent = 'Vorschau – noch nicht gespeichert';
+            } catch (err) {
+                previewState.textContent = 'Vorschau fehlgeschlagen: ' + err.message;
+            }
+        }, 350);
+    };
+    form.addEventListener('input', refresh);
+    refresh();
+
+    const buttons = [...form.querySelectorAll('button')];
+    form.addEventListener('submit', async e => {
+        e.preventDefault();
+        await withBusy(buttons, async () => {
+            const result = await api('PUT', `/api/events/${event.id}/override`, formValues(form));
+            state.openEditor = null;
+            if (result.stats?.failed) showAlert('Gespeichert, aber beim Abgleich gab es einen Fehler – siehe Protokoll.', 'warn');
+            await Promise.all([loadEvents(), loadStatus()]);
+        });
+    });
+    $('.reset-btn', form).addEventListener('click', async () => {
+        if (!confirm('Alle Anpassungen für dieses Event verwerfen und wieder die Werte aus ChurchTools verwenden?')) return;
+        await withBusy(buttons, async () => {
+            await api('DELETE', `/api/events/${event.id}/override`);
+            state.openEditor = null;
+            await Promise.all([loadEvents(), loadStatus()]);
+        });
+    });
+    $('.cancel-btn', form).addEventListener('click', () => {
+        state.openEditor = null;
+        renderEvents();
+    });
+}
+
+// ---------- Laden ----------
+async function loadStatus() {
+    const wasRunning = state.status?.running;
+    state.status = await api('GET', '/api/status');
+    renderStatus();
+    if (wasRunning && !state.status.running && !state.openEditor) await loadEvents();
+}
+
+async function loadEvents() {
+    const data = await api('GET', '/api/events');
+    state.events = data.events;
+    if (data.youtubeError) showAlert('YouTube-Status konnte nicht geladen werden: ' + data.youtubeError, 'warn');
+    renderEvents();
+}
+
+$('#sync-btn').addEventListener('click', async e => {
+    await withBusy([e.currentTarget], async () => {
+        const promise = api('POST', '/api/sync');
+        setTimeout(loadStatus, 300); // "läuft" sofort anzeigen
+        await promise;
+        await Promise.all([loadStatus(), loadEvents()]);
+    });
+});
+
+async function poll() {
+    try {
+        await loadStatus();
+    } catch {
+        $('#status-pill').className = 'pill err';
+        $('#status-pill').textContent = 'Keine Verbindung';
+    }
+    setTimeout(poll, state.status?.running ? 2000 : 10000);
+}
+
+(async () => {
+    try {
+        await loadStatus();
+        await loadEvents();
+    } catch (err) {
+        showAlert('Dashboard konnte nicht geladen werden: ' + err.message);
+    }
+    setTimeout(poll, 10000);
+})();

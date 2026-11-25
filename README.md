@@ -12,7 +12,8 @@ cp .env.example .env   # Zugangsdaten eintragen
 ## Verwendung
 
 ```
-npm run watch              # dauerhaft laufen, alle 15 min abgleichen
+npm run watch              # dauerhaft laufen, alle 15 min abgleichen, mit Dashboard
+npm run dashboard          # nur Dashboard, Abgleich per Knopfdruck
 node index.js              # einmal abgleichen: Events von heute bis in 7 Tagen
 node index.js --days 14    # größerer Zeitraum
 node index.js --event 191  # nur ein bestimmtes Event
@@ -36,6 +37,21 @@ Jeder Lauf gleicht `output/` mit ChurchTools ab; was schon erzeugt wurde, merkt 
 - Vergangene Events werden nicht mehr verfolgt, ihre Dateien bleiben liegen.
 
 Mit `npm run watch` läuft das Tool dauerhaft und gleicht im Intervall `WATCH_INTERVAL_MINUTES` (Standard 15) ab. Netzwerk- oder Login-Fehler werden geloggt und beim nächsten Durchlauf erneut versucht. Damit es nach einem Neustart automatisch wieder läuft, z. B. in der Windows-Aufgabenplanung „Beim Start“ `node index.js --watch` im Projektordner starten lassen, oder auf einem Server mit pm2/systemd/Docker.
+
+## Dashboard
+
+`npm run watch` (oder `npm run dashboard`) startet zusätzlich ein Dashboard unter **http://127.0.0.1:3000** (Port: `DASHBOARD_PORT`). Dort siehst du für jedes Event im Zeitraum:
+
+- das Thumbnail (Klick = große Ansicht), Thema, Art, Prediger und Predigttext
+- ob die Agenda abgeschlossen ist und warum ggf. kein Thumbnail erstellt wurde
+- die Rohdaten aus ChurchTools (Event-Notiz, Predigt-Eintrag) und den YouTube-Titel samt Beschreibung
+- den Livestream mit Sichtbarkeit, Links zu YouTube und YouTube Studio
+
+**Anpassen:** Passt etwas nicht, können Thema, Art, Prediger und Predigttext überschrieben werden – mit Live-Vorschau. Im Thema erzeugt Enter einen eigenen Zeilenumbruch im Thumbnail. Ist die Agenda noch offen, kann das Thumbnail trotzdem erzeugt werden. Beim Speichern werden Thumbnail und YouTube-Livestream sofort aktualisiert. Die Anpassungen liegen in `data/overrides.json` und gelten, bis man sie zurücksetzt; Änderungen in ChurchTools an *nicht* angepassten Feldern werden weiterhin übernommen.
+
+**Freigabe-Ablauf:** Neue Livestreams werden *nicht gelistet* angelegt (`YOUTUBE_PRIVACY=unlisted`). Im Dashboard und in YouTube Studio prüfen, dann im Dashboard auf **„Öffentlich schalten“** klicken. Spätere Aktualisierungen ändern die Sichtbarkeit nicht.
+
+Das Dashboard ist nur vom eigenen Rechner aus erreichbar und hat keine Anmeldung.
 
 ## Was in ChurchTools gepflegt sein muss
 
@@ -81,6 +97,6 @@ Optional legt das Tool für jedes Event einen geplanten YouTube-Livestream an �
    Die ID in `.env` als `YOUTUBE_STREAM_ID` eintragen.
 6. In `.env` `YOUTUBE_ENABLED=true` setzen, erst mit `node index.js --dry-run` prüfen, dann normal laufen lassen.
 
-Neue Livestreams sind standardmäßig **nicht gelistet** (`YOUTUBE_PRIVACY`), damit man den ersten Test gefahrlos ansehen kann. Für den Normalbetrieb auf `public` stellen. Alle Optionen stehen in `.env.example`.
+Neue Livestreams sind standardmäßig **nicht gelistet** (`YOUTUBE_PRIVACY`), damit man den ersten Test gefahrlos ansehen kann. Freigeben lässt sich ein Livestream dann im Dashboard per „Öffentlich schalten“. Alle Optionen stehen in `.env.example`.
 
 Hinweis: Google schränkt Uploads aus nicht geprüften API-Projekten teilweise auf „privat“ ein. Ob das auch geplante Livestreams betrifft, beim ersten Test kontrollieren.
