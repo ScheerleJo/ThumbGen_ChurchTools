@@ -53,6 +53,34 @@ Mit `npm run watch` läuft das Tool dauerhaft und gleicht im Intervall `WATCH_IN
 
 `assets/backgrounds/<art in kleinbuchstaben>.png`, z. B. `familiengottesdienst.png`. Fehlt eine Datei, wird `default.png` genutzt – für einen eigenen Jugendgottesdienst-Hintergrund reicht es also, `jugendgottesdienst.png` abzulegen.
 
-## Ideen / TODO
+## YouTube
 
-- Thumbnail direkt am geplanten YouTube-Livestream setzen (YouTube Data API `thumbnails.set`).
+Optional legt das Tool für jedes Event einen geplanten YouTube-Livestream an – mit Titel, Beschreibung, Startzeit und Thumbnail – und hält ihn beim Abgleich aktuell:
+
+- **neu** → Livestream wird angelegt und an den Stream-Key gebunden
+- **aktualisiert** → Titel, Beschreibung, Startzeit und Thumbnail werden aktualisiert (Sichtbarkeit und andere Einstellungen aus dem Studio bleiben)
+- **entfernt** → Livestream wird gelöscht, aber nur, solange er noch nicht live war
+- Im Studio gelöschte Livestreams werden beim nächsten Änderungsabgleich neu angelegt.
+- Hat das Event schon begonnen, wird der Livestream nicht mehr angefasst.
+- Schlägt YouTube fehl, bleibt das lokale Thumbnail erhalten und YouTube wird beim nächsten Lauf erneut versucht.
+
+### Einrichtung (einmalig)
+
+1. In der [Google Cloud Console](https://console.cloud.google.com/) ein Projekt anlegen und die **YouTube Data API v3** aktivieren.
+2. **OAuth-Zustimmungsbildschirm**: Typ „Extern“, App-Name eintragen, eigenes Konto als Testnutzer hinzufügen. Danach den Status auf **„In Produktion“** stellen – im Status „Testing“ läuft die Anmeldung nach 7 Tagen ab. (Eine Prüfung durch Google ist für die eigene Nutzung nicht nötig; bei der Anmeldung erscheint nur ein Hinweis, dass die App nicht überprüft ist.)
+3. **Anmeldedaten → OAuth-Client-ID** vom Typ **„Desktop-App“** erstellen, JSON herunterladen und als `youtube-client-secret.json` in den Projektordner legen.
+4. Anmelden – mit dem Konto, das den YouTube-Kanal verwaltet:
+   ```
+   node index.js --youtube-auth
+   ```
+   Der Zugang wird in `youtube-token.json` gespeichert. Beide Dateien sind in `.gitignore` und dürfen nicht weitergegeben werden.
+5. Stream-Key auswählen, den OBS benutzt:
+   ```
+   node index.js --youtube-streams
+   ```
+   Die ID in `.env` als `YOUTUBE_STREAM_ID` eintragen.
+6. In `.env` `YOUTUBE_ENABLED=true` setzen, erst mit `node index.js --dry-run` prüfen, dann normal laufen lassen.
+
+Neue Livestreams sind standardmäßig **nicht gelistet** (`YOUTUBE_PRIVACY`), damit man den ersten Test gefahrlos ansehen kann. Für den Normalbetrieb auf `public` stellen. Alle Optionen stehen in `.env.example`.
+
+Hinweis: Google schränkt Uploads aus nicht geprüften API-Projekten teilweise auf „privat“ ein. Ob das auch geplante Livestreams betrifft, beim ersten Test kontrollieren.

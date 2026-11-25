@@ -6,6 +6,7 @@ const Mustache = require('mustache');
 const ct = require('./churchtools');
 const canvas = require('./canvas');
 const text = require('./text');
+const youtube = require('./youtube');
 
 Mustache.escape = value => String(value); // Keine HTML-Escapes in YouTube-Texten
 
@@ -96,7 +97,8 @@ const rel = file => path.relative(process.cwd(), file);
  * @returns {{created: number, updated: number, removed: number, unchanged: number, skipped: number, failed: number}}
  */
 async function syncOnce({ days = 7, eventId, dryRun = false, force = false, rebuild = false, sermonItemTitle, log = console.log }) {
-    const stats = { created: 0, updated: 0, removed: 0, unchanged: 0, skipped: 0, failed: 0 };
+    const stats = { created: 0, updated: 0, removed: 0, unchanged: 0, skipped: 0, failed: 0, youtube: 0 };
+    const yt = youtube.isEnabled();
     const state = loadState();
     const now = new Date();
     const from = ymd(now);
@@ -110,12 +112,27 @@ async function syncOnce({ days = 7, eventId, dryRun = false, force = false, rebu
         events = (await ct.getEvents(from, to)) || [];
     }
 
-    const remove = (id, reason, label) => {
+    const remove = async (id, reason, label) => {
         const entry = state.events[id];
         if (!entry) return false;
         log(`- ${label}: ${reason} – entferne ${entry.files.map(rel).join(', ')}`);
-        if (!dryRun) removeFiles(entry.files);
-        delete state.events[id];
+        if (entry.youtube?.id) {
+            if (!yt) {
+                log(`  YouTube-Livestream ${youtube.watchUrl(entry.youtube.id)} bleibt bestehen (YouTube-Abgleich ist aus)`);
+            } else if (dryRun) {
+                log(`  würde YouTube-Livestream ${youtube.watchUrl(entry.youtube.id)} löschen`);
+            } else {
+                // Schlägt das fehl, bleibt der Eintrag erhalten und es wird beim nächsten Lauf erneut versucht
+                const result = await youtube.deleteBroadcast(entry.youtube.id);
+                if (result === 'deleted') log(`  YouTube-Livestream ${youtube.watchUrl(entry.youtube.id)} gelöscht`);
+                else if (result !== 'gone') log(`  YouTube-Livestream ${youtube.watchUrl(entry.youtube.id)} nicht gelöscht (Status: ${result})`);
+                stats.youtube++;
+            }
+        }
+        if (!dryRun) {
+            removeFiles(entry.files);
+            delete state.events[id];
+        }
         stats.removed++;
         return true;
     };
@@ -126,7 +143,7 @@ async function syncOnce({ days = 7, eventId, dryRun = false, force = false, rebu
         try {
             if (event.isCanceled || !text.isStreamed(event)) {
                 const reason = event.isCanceled ? 'abgesagt' : 'kein Livestream';
-                if (!remove(id, reason, label)) stats.skipped++;
+                if (!(await remove(id, reason, label))) stats.skipped++;
                 continue;
             }
 
@@ -149,20 +166,49 @@ async function syncOnce({ days = 7, eventId, dryRun = false, force = false, rebu
             const fp = fingerprint(info, output);
             const files = [output.image, output.textFile];
             const filesExist = files.every(f => fs.existsSync(f));
-            if (entry && entry.fingerprint === fp && filesExist && !rebuild) {
+            const localDone = entry && entry.fingerprint === fp && filesExist && !rebuild;
+            const ytDone = !yt || (entry?.youtube?.fingerprint === fp
+                && (entry.youtube.streamId ?? '') === youtube.settings().streamId && !rebuild);
+            if (localDone && ytDone) {
                 stats.unchanged++;
                 continue;
             }
 
-            const action = entry ? 'aktualisiert' : 'neu';
-            log(`+ ${label}: ${action}${problems.length ? ' [WARNUNG: ' + problems.join(', ') + ']' : ''}`);
-            log(`  -> ${rel(output.image)} | ${output.title}`);
-            if (!dryRun) {
-                await writeOutput(info, output);
-                if (entry) removeFiles(entry.files, files); // z. B. alte Datei nach Terminverschiebung
-                state.events[id] = { fingerprint: fp, files, startDate: event.startDate, name: event.name };
+            const current = { ...entry, startDate: event.startDate, name: event.name };
+            if (!localDone) {
+                const action = entry ? 'aktualisiert' : 'neu';
+                log(`+ ${label}: ${action}${problems.length ? ' [WARNUNG: ' + problems.join(', ') + ']' : ''}`);
+                log(`  -> ${rel(output.image)} | ${output.title}`);
+                if (!dryRun) {
+                    await writeOutput(info, output);
+                    if (entry) removeFiles(entry.files, files); // z. B. alte Datei nach Terminverschiebung
+                    Object.assign(current, { fingerprint: fp, files });
+                    state.events[id] = current;
+                }
+                entry ? stats.updated++ : stats.created++;
+            } else {
+                stats.unchanged++;
             }
-            entry ? stats.updated++ : stats.created++;
+
+            if (!ytDone) {
+                const existingId = entry?.youtube?.id;
+                if (new Date(event.startDate) <= now) {
+                    log(`  YouTube: ${label} hat schon begonnen – Livestream wird nicht mehr geändert`);
+                } else if (dryRun) {
+                    log(`  würde YouTube-Livestream ${existingId ? 'aktualisieren' : 'anlegen'}`);
+                } else {
+                    const { id: ytId, created, streamId } = await youtube.upsertBroadcast(existingId, {
+                        title: output.title,
+                        description: output.description,
+                        startTime: event.startDate,
+                        thumbnail: output.image,
+                    });
+                    log(`  YouTube: Livestream ${created ? 'angelegt' : 'aktualisiert'} – ${youtube.watchUrl(ytId)}`);
+                    current.youtube = { id: ytId, fingerprint: fp, streamId };
+                    state.events[id] = current;
+                    stats.youtube++;
+                }
+            }
         } catch (err) {
             log(`! ${label}: ${err.message}`);
             stats.failed++;
@@ -176,7 +222,12 @@ async function syncOnce({ days = 7, eventId, dryRun = false, force = false, rebu
             if (day < from) {
                 delete state.events[id]; // Vergangen: Dateien bleiben liegen, wird nur nicht mehr verfolgt
             } else if (day <= to && !seen.has(id)) {
-                remove(id, 'nicht mehr in ChurchTools (gelöscht oder verschoben)', `${entry.name} (#${id})`);
+                try {
+                    await remove(id, 'nicht mehr in ChurchTools (gelöscht oder verschoben)', `${entry.name} (#${id})`);
+                } catch (err) {
+                    log(`! ${entry.name} (#${id}): ${err.message}`);
+                    stats.failed++;
+                }
             }
         }
     }

@@ -21,9 +21,11 @@
   },
   "dependencies": {
     "@churchtools/churchtools-client": "^1.7.4",
+    "@googleapis/youtube": "^40.1.0",
     "axios-cookiejar-support": "^7.0.0",
     "canvas": "^3.2.3",
     "dotenv": "^18.0.10",
+    "google-auth-library": "^11.3.4",
     "mustache": "^4.2.0",
     "tough-cookie": "^6.1.0"
   },
