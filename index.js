@@ -44,11 +44,14 @@ async function runCycle(args, log) {
         youtube.settings(); // Konfiguration prüfen
         youtube.api(); // wirft, wenn noch nicht autorisiert
     }
-    await ct.login({
-        loginToken: process.env.CT_LOGIN_TOKEN,
-        username: process.env.CT_USERNAME,
-        password: process.env.CT_PASSWORD,
-    });
+    // Ein im Dashboard angelegter Stream braucht ChurchTools nicht
+    if (!(args.event && sync.isManualId(args.event))) {
+        await ct.login({
+            loginToken: process.env.CT_LOGIN_TOKEN,
+            username: process.env.CT_USERNAME,
+            password: process.env.CT_PASSWORD,
+        });
+    }
     const stats = await sync.syncOnce({
         days: Number(args.days),
         eventId: args.event,
@@ -99,6 +102,7 @@ async function serve(args) {
             // Vom Dashboard ausgelöst: einzelnes Event oder alles, nie Dry-Run/Rebuild
             runSync: eventId => runCycle({ ...args, event: eventId, rebuild: false, 'dry-run': false }, log),
             getLog: () => logLines,
+            log,
         });
         log(`Dashboard läuft auf http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`);
     }

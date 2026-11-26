@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const sync = require('./sync');
 const youtube = require('./youtube');
-const canvas = require('./canvas');
+const backgrounds = require('./backgrounds');
 
 const STATIC_DIR = path.join(__dirname, 'dashboard');
 const STATIC_FILES = {
@@ -13,6 +13,7 @@ const STATIC_FILES = {
     '/style.css': ['style.css', 'text/css; charset=utf-8'],
 };
 const MAX_BODY = 100 * 1024;
+const MAX_UPLOAD = 25 * 1024 * 1024;
 
 class HttpError extends Error {
     constructor(status, message) {
@@ -27,28 +28,33 @@ function send(res, status, body, type = 'application/json; charset=utf-8') {
     res.end(payload);
 }
 
-function readBody(req) {
+function readRaw(req, max) {
     return new Promise((resolve, reject) => {
         let size = 0;
         const chunks = [];
         req.on('data', chunk => {
             size += chunk.length;
-            if (size > MAX_BODY) {
-                reject(new HttpError(413, 'Anfrage zu groß'));
+            if (size > max) {
+                reject(new HttpError(413, `Anfrage zu groß (max. ${Math.round(max / 1024 / 1024) || 0.1} MB)`));
                 req.destroy();
             } else chunks.push(chunk);
         });
-        req.on('end', () => {
-            if (!chunks.length) return resolve({});
-            try {
-                resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-            } catch {
-                reject(new HttpError(400, 'Ungültiges JSON'));
-            }
-        });
+        req.on('end', () => resolve(Buffer.concat(chunks)));
         req.on('error', reject);
     });
 }
+
+async function readBody(req) {
+    const raw = await readRaw(req, MAX_BODY);
+    if (!raw.length) return {};
+    try {
+        return JSON.parse(raw.toString('utf8'));
+    } catch {
+        throw new HttpError(400, 'Ungültiges JSON');
+    }
+}
+
+const publicBackground = ({ name, builtin }) => ({ name, builtin });
 
 /**
  * @param {object} options
@@ -56,8 +62,9 @@ function readBody(req) {
  * @param {string} options.host
  * @param {(eventId?: string) => Promise<object>} options.runSync Abgleich (mit Login) ausführen
  * @param {() => string[]} options.getLog letzte Log-Zeilen
+ * @param {(msg: string) => void} [options.log] Log-Ausgabe
  */
-function start({ port, host, runSync, getLog }) {
+function start({ port, host, runSync, getLog, log: logLine = console.log }) {
     const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `${host}:${port}`]);
     let lastError = null;
     let lastStats = null;
@@ -67,6 +74,12 @@ function start({ port, host, runSync, getLog }) {
         if (!event) throw new HttpError(404, 'Event nicht gefunden – bitte neu abgleichen');
         return event;
     };
+    const findChurchToolsEvent = id => {
+        if (sync.isManualId(id)) throw new HttpError(400, 'Manuell angelegte Streams werden direkt bearbeitet');
+        return findEvent(id);
+    };
+
+    const removeManual = id => sync.removeManual(id, { log: logLine });
 
     const runAndRemember = async eventId => {
         try {
@@ -89,7 +102,7 @@ function start({ port, host, runSync, getLog }) {
                 range: report.from ? { from: report.from, to: report.to } : null,
                 lastStats, lastError,
                 youtube: yt ? { enabled: true, privacyDefault: youtube.settings().privacy } : { enabled: false },
-                backgrounds: canvas.listBackgrounds(),
+                backgrounds: backgrounds.list().map(publicBackground),
                 log: getLog().slice(-40),
             };
         }],
@@ -125,33 +138,76 @@ function start({ port, host, runSync, getLog }) {
 
         ['POST', /^\/api\/sync$/, async () => ({ stats: await runAndRemember() })],
 
-        ['POST', /^\/api\/events\/(\d+)\/preview$/, async (req, res, [id]) => {
-            const event = findEvent(id);
+        ['POST', /^\/api\/events\/([\w-]+)\/preview$/, async (req, res, [id]) => {
+            const event = findChurchToolsEvent(id);
             if (!event.ctInfo) throw new HttpError(400, 'Für dieses Event gibt es keine Thumbnail-Daten');
             const body = await readBody(req);
             const info = sync.applyOverrides(event.ctInfo, body);
             send(res, 200, await sync.renderPreview(info), 'image/jpeg');
         }],
 
-        ['PUT', /^\/api\/events\/(\d+)\/override$/, async (req, res, [id]) => {
-            findEvent(id);
+        ['PUT', /^\/api\/events\/([\w-]+)\/override$/, async (req, res, [id]) => {
+            findChurchToolsEvent(id);
             const override = sync.saveOverride(id, await readBody(req));
             return { override, stats: await runAndRemember(id) };
         }],
 
-        ['DELETE', /^\/api\/events\/(\d+)\/override$/, async (req, res, [id]) => {
-            findEvent(id);
+        ['DELETE', /^\/api\/events\/([\w-]+)\/override$/, async (req, res, [id]) => {
+            findChurchToolsEvent(id);
             sync.saveOverride(id, null);
             return { override: null, stats: await runAndRemember(id) };
         }],
 
-        ['POST', /^\/api\/events\/(\d+)\/privacy$/, async (req, res, [id]) => {
+        ['POST', /^\/api\/events\/([\w-]+)\/privacy$/, async (req, res, [id]) => {
             if (!youtube.isEnabled()) throw new HttpError(400, 'YouTube-Abgleich ist nicht aktiviert');
             const ytId = sync.loadState().events[id]?.youtube?.id;
             if (!ytId) throw new HttpError(404, 'Zu diesem Event gibt es keinen Livestream');
             const { privacy } = await readBody(req);
             if (!['public', 'unlisted', 'private'].includes(privacy)) throw new HttpError(400, 'Ungültige Sichtbarkeit');
             return { privacy: await youtube.setPrivacy(ytId, privacy) };
+        }],
+
+        // ---- Manuell angelegte Streams ----
+        ['POST', /^\/api\/preview$/, async (req, res) => {
+            send(res, 200, await sync.renderPreview(sync.manualPreviewInfo(await readBody(req))), 'image/jpeg');
+        }],
+
+        ['POST', /^\/api\/manual$/, async req => {
+            const id = sync.saveManual(null, await readBody(req));
+            return { id, stats: await runAndRemember(id) };
+        }],
+
+        ['PUT', /^\/api\/manual\/([\w-]+)$/, async (req, res, [id]) => {
+            sync.saveManual(id, await readBody(req));
+            return { id, stats: await runAndRemember(id) };
+        }],
+
+        ['DELETE', /^\/api\/manual\/([\w-]+)$/, async (req, res, [id]) => ({ stats: await removeManual(id) })],
+
+        // ---- Hintergründe ----
+        ['GET', /^\/api\/backgrounds$/, async () => ({ backgrounds: backgrounds.list().map(publicBackground) })],
+
+        ['GET', /^\/api\/backgrounds\/([^/]+)\/image$/, async (req, res, [name]) => {
+            const image = await backgrounds.preview(decodeURIComponent(name));
+            if (!image) throw new HttpError(404, 'Hintergrund nicht gefunden');
+            send(res, 200, image, 'image/jpeg');
+        }],
+
+        ['POST', /^\/api\/backgrounds$/, async (req, res, match, url) => {
+            if (!/^image\/(png|jpeg)$/.test(req.headers['content-type'] || '')) {
+                throw new HttpError(415, 'Bitte ein PNG- oder JPEG-Bild hochladen');
+            }
+            const saved = await backgrounds.save(url.searchParams.get('name'), await readRaw(req, MAX_UPLOAD));
+            return { background: publicBackground(saved) };
+        }],
+
+        ['DELETE', /^\/api\/backgrounds\/([^/]+)$/, async (req, res, [name]) => {
+            const bg = backgrounds.find(decodeURIComponent(name));
+            if (!bg) throw new HttpError(404, 'Hintergrund nicht gefunden');
+            const usedBy = sync.backgroundUsage(bg.name);
+            if (usedBy.length) throw new HttpError(409, `Wird noch verwendet: ${usedBy.join(', ')}`);
+            backgrounds.remove(bg.name);
+            return { deleted: bg.name };
         }],
     ];
 
@@ -169,7 +225,7 @@ function start({ port, host, runSync, getLog }) {
             for (const [method, pattern, handler] of routes) {
                 const match = url.pathname.match(pattern);
                 if (!match || method !== req.method) continue;
-                const result = await handler(req, res, match.slice(1));
+                const result = await handler(req, res, match.slice(1), url);
                 if (!res.headersSent) send(res, 200, result ?? {});
                 return;
             }

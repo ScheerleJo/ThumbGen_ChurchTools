@@ -49,6 +49,10 @@ Mit `npm run watch` läuft das Tool dauerhaft und gleicht im Intervall `WATCH_IN
 
 **Anpassen:** Passt etwas nicht, können Thema, Art, Prediger und Predigttext überschrieben werden – mit Live-Vorschau. Im Thema erzeugt Enter einen eigenen Zeilenumbruch im Thumbnail. Ist die Agenda noch offen, kann das Thumbnail trotzdem erzeugt werden. Beim Speichern werden Thumbnail und YouTube-Livestream sofort aktualisiert. Die Anpassungen liegen in `data/overrides.json` und gelten, bis man sie zurücksetzt; Änderungen in ChurchTools an *nicht* angepassten Feldern werden weiterhin übernommen.
 
+**Hintergründe:** Beim Anpassen lässt sich der Hintergrund wählen (Standard: automatisch passend zur Art). Unter „Hintergründe“ bzw. direkt in der Auswahl können eigene Bilder (PNG/JPEG) hochgeladen werden; sie werden auf 1920 × 1080 zugeschnitten und in `data/backgrounds/` gespeichert. Heißt ein Hintergrund wie eine Art (z. B. `jugendgottesdienst`), wird er dafür automatisch verwendet. Hochgeladene Hintergründe lassen sich löschen, solange sie nirgends ausgewählt sind.
+
+**Neuer Stream:** Für Streams, die nicht in ChurchTools stehen, legt „+ Neuer Stream“ Datum, Uhrzeit, Thema, Art, Prediger, Predigttext und Hintergrund fest. Thumbnail und (nicht gelisteter) YouTube-Livestream werden sofort erstellt. Diese Streams liegen in `data/manual-events.json`, können bearbeitet oder gelöscht werden (löscht auch den YouTube-Livestream, solange er nicht live war) und verschwinden nach dem Termin automatisch aus der Liste.
+
 **Freigabe-Ablauf:** Neue Livestreams werden *nicht gelistet* angelegt (`YOUTUBE_PRIVACY=unlisted`). Im Dashboard und in YouTube Studio prüfen, dann im Dashboard auf **„Öffentlich schalten“** klicken. Spätere Aktualisierungen ändern die Sichtbarkeit nicht.
 
 Das Dashboard ist nur vom eigenen Rechner aus erreichbar und hat keine Anmeldung.

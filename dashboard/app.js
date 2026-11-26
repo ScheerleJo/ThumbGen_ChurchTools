@@ -24,20 +24,23 @@ const LIFECYCLE = {
     liveStarting: 'startet', live: 'LIVE', complete: 'beendet', revoked: 'gesperrt',
 };
 
-let state = { status: null, events: [], openEditor: null };
+let state = { status: null, events: [], openEditor: null, newOpen: false, bgKey: '', bgVersion: 0 };
 
 // ---------- API ----------
-async function api(method, url, body) {
-    const res = await fetch(url, {
-        method,
-        headers: { 'X-ThumbGen': '1', ...(body ? { 'Content-Type': 'application/json' } : {}) },
-        body: body ? JSON.stringify(body) : undefined,
-    });
+async function parseResponse(res) {
     if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || `HTTP ${res.status}`);
     }
     return res.headers.get('content-type')?.includes('json') ? res.json() : res.blob();
+}
+
+async function api(method, url, body) {
+    return parseResponse(await fetch(url, {
+        method,
+        headers: { 'X-ThumbGen': '1', ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+    }));
 }
 
 // ---------- Hilfsfunktionen ----------
@@ -46,6 +49,7 @@ function el(tag, props = {}, ...children) {
     for (const [key, value] of Object.entries(props)) {
         if (key === 'class') node.className = value;
         else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+        else if (key === 'checked') node.checked = Boolean(value);
         else if (value !== undefined && value !== null && value !== false) node.setAttribute(key, value === true ? '' : value);
     }
     for (const child of children.flat()) {
@@ -83,6 +87,7 @@ async function withBusy(buttons, fn) {
         return await fn();
     } catch (err) {
         showAlert(err.message);
+        return null;
     } finally {
         buttons.forEach(b => { b.disabled = false; });
     }
@@ -90,9 +95,99 @@ async function withBusy(buttons, fn) {
 
 function openLightbox(src) {
     const dialog = el('dialog', { class: 'lightbox', onclick: () => dialog.close(), onclose: () => dialog.remove() },
-        el('img', { src, alt: 'Thumbnail in voller Größe' }));
+        el('img', { src, alt: 'Bild in voller Größe' }));
     document.body.append(dialog);
     dialog.showModal();
+}
+
+/** Nächster Sonntag als YYYY-MM-DD (Vorschlag für neue Streams). */
+function nextSunday() {
+    const d = new Date();
+    d.setDate(d.getDate() + ((7 - d.getDay()) % 7 || 7));
+    return d.toLocaleDateString('en-CA');
+}
+
+// ---------- Hintergründe ----------
+const backgroundList = () => state.status?.backgrounds || [];
+const bgLabel = name => (name === 'default' ? 'Standard' : name.charAt(0).toUpperCase() + name.slice(1).replace(/[-_]/g, ' '));
+const bgImage = name => `/api/backgrounds/${encodeURIComponent(name)}/image?v=${state.bgVersion}`;
+const normalizeBgName = name => name.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9äöüß_-]/g, '').slice(0, 40);
+
+/** Fragt nach einem Namen und lädt das Bild hoch. Gibt den gespeicherten Namen zurück (oder null). */
+async function uploadBackground(file) {
+    if (!file) return null;
+    if (!/^image\/(png|jpeg)$/.test(file.type)) throw new Error('Bitte ein PNG- oder JPEG-Bild auswählen');
+    const input = prompt('Name für den Hintergrund:\n\nHeißt er wie eine Gottesdienst-Art (z. B. „jugendgottesdienst“), '
+        + 'wird er dafür automatisch verwendet.', normalizeBgName(file.name.replace(/\.[^.]+$/, '')));
+    if (input === null) return null;
+    const name = normalizeBgName(input);
+    if (!name) throw new Error('Bitte einen Namen aus Buchstaben, Ziffern, - oder _ angeben');
+    const existing = backgroundList().find(b => b.name === name);
+    if (existing?.builtin) throw new Error(`„${name}“ ist ein mitgelieferter Hintergrund – bitte einen anderen Namen wählen`);
+    if (existing && !confirm(`Den Hintergrund „${name}“ ersetzen? Thumbnails, die ihn verwenden, werden beim nächsten Abgleich neu erstellt.`)) {
+        return null;
+    }
+    const { background } = await parseResponse(await fetch(`/api/backgrounds?name=${encodeURIComponent(name)}`, {
+        method: 'POST',
+        headers: { 'X-ThumbGen': '1', 'Content-Type': file.type },
+        body: file,
+    }));
+    state.bgVersion++;
+    await loadStatus();
+    showAlert(`Hintergrund „${bgLabel(background.name)}“ gespeichert.`, 'ok');
+    return background.name;
+}
+
+const uploadTile = (label, onFile) => el('label', { class: 'bg-option bg-upload' },
+    el('input', {
+        type: 'file', accept: 'image/png,image/jpeg',
+        onchange: e => {
+            e.stopPropagation();
+            const file = e.target.files[0];
+            e.target.value = '';
+            onFile(file);
+        },
+    }),
+    el('span', { class: 'bg-placeholder' }, '+ Hochladen'),
+    el('span', { class: 'bg-name muted' }, label));
+
+function renderBackgroundPanel() {
+    const list = backgroundList();
+    $('#bg-count').textContent = `(${list.length})`;
+    $('#bg-grid').replaceChildren(...list.map(bg => el('div', { class: 'bg-tile' },
+        el('img', { src: bgImage(bg.name), alt: '', loading: 'lazy', onclick: () => openLightbox(bgImage(bg.name)) }),
+        el('div', { class: 'bg-meta' },
+            el('span', { class: 'bg-name', title: bg.name }, bgLabel(bg.name)),
+            bg.builtin
+                ? el('span', { class: 'muted' }, 'mitgeliefert')
+                : el('button', {
+                    class: 'btn small danger', type: 'button', title: 'Hintergrund löschen',
+                    onclick: async e => {
+                        if (!confirm(`Hintergrund „${bgLabel(bg.name)}“ löschen?`)) return;
+                        await withBusy([e.currentTarget], async () => {
+                            await api('DELETE', `/api/backgrounds/${encodeURIComponent(bg.name)}`);
+                            await loadStatus();
+                        });
+                    },
+                }, 'Löschen')))),
+    uploadTile('PNG oder JPEG', file => withBusy([], () => uploadBackground(file))));
+}
+
+/** Auswahl im Editor: "Automatisch" + alle Hintergründe + Hochladen. */
+function renderPicker(picker, selected, onChange) {
+    const option = (value, visual, label, title) => el('label', { class: 'bg-option', title },
+        el('input', { type: 'radio', name: 'background', value, checked: value === selected }),
+        visual, el('span', { class: 'bg-name' }, label));
+    picker.replaceChildren(
+        option('', el('span', { class: 'bg-placeholder' }, 'Auto'), 'Automatisch', 'Passend zur Art des Gottesdienstes'),
+        ...backgroundList().map(bg => option(bg.name, el('img', { src: bgImage(bg.name), alt: '', loading: 'lazy' }), bgLabel(bg.name), bg.name)),
+        uploadTile('Eigener', async file => {
+            const current = picker.querySelector('input[name=background]:checked')?.value || '';
+            const name = await withBusy([], () => uploadBackground(file));
+            renderPicker(picker, name || current, onChange);
+            if (name) onChange();
+        }),
+    );
 }
 
 // ---------- Rendering ----------
@@ -118,9 +213,15 @@ function renderStatus() {
     $('#sync-info').textContent = `Letzter Abgleich ${formatAgo(s.lastSync)}${range} · ${yt}`;
     $('#log').textContent = s.log.join('\n') || 'Noch keine Einträge.';
 
-    const types = new Set(['Gottesdienst', 'Familiengottesdienst', 'Jugendgottesdienst',
-        ...s.backgrounds.filter(b => b !== 'default').map(b => b[0].toUpperCase() + b.slice(1))]);
-    $('#event-types').replaceChildren(...[...types].map(t => el('option', { value: t })));
+    // Hintergründe nur neu zeichnen, wenn sich etwas geändert hat (sonst laden die Bilder bei jedem Poll neu)
+    const bgKey = JSON.stringify(s.backgrounds) + state.bgVersion;
+    if (bgKey !== state.bgKey) {
+        state.bgKey = bgKey;
+        const types = new Set(['Gottesdienst', 'Familiengottesdienst', 'Jugendgottesdienst',
+            ...s.backgrounds.filter(b => b.name !== 'default').map(b => bgLabel(b.name))]);
+        $('#event-types').replaceChildren(...[...types].map(t => el('option', { value: t })));
+        renderBackgroundPanel();
+    }
 }
 
 function renderEvents() {
@@ -167,7 +268,9 @@ function renderEvent(event) {
     const [statusLabel, statusKind] = STATUS[event.status] || [event.status || '–', ''];
     $('.badges', node).append(...[
         pill(statusLabel, statusKind),
-        pill(`Agenda ${event.agenda || '–'}`, event.agenda === 'abgeschlossen' ? '' : 'warn'),
+        event.manual
+            ? pill('Im Dashboard angelegt', 'info')
+            : pill(`Agenda ${event.agenda || '–'}`, event.agenda === 'abgeschlossen' ? '' : 'warn'),
         Object.keys(override).length ? pill('angepasst', 'info') : null,
     ].filter(Boolean));
 
@@ -176,13 +279,15 @@ function renderEvent(event) {
     if (event.status === 'fehler' && event.message) problems.push(event.message);
     if (problems.length) {
         let hint = '';
-        if (event.status === 'übersprungen') {
+        if (event.manual) {
+            hint = ' – über „Bearbeiten“ kannst du es ergänzen.';
+        } else if (event.status === 'übersprungen') {
             hint = ' – über „Anpassen“ kannst du die Werte selbst eintragen und das Thumbnail trotzdem erzeugen.';
         } else if (event.status !== 'fehler' && event.thumbnail && !event.override?.force) {
             hint = ' – das bestehende Thumbnail bleibt unverändert, bis die Agenda abgeschlossen ist (oder du es über „Anpassen“ erzwingst).';
         }
         $('.problems', node).append(el('div', { class: `alert ${event.status === 'fehler' ? '' : 'warn'}` },
-            problems.join(', ') + hint));
+            problems.join(', ') + (event.status === 'fehler' ? '' : hint)));
     }
 
     // Felder
@@ -200,26 +305,51 @@ function renderEvent(event) {
         }
         dl.append(el('dt', {}, label), dd);
     }
+    if (event.background) {
+        dl.append(el('dt', {}, 'Hintergrund'), el('dd', {},
+            bgLabel(event.background.name),
+            event.background.auto ? el('span', { class: 'muted' }, ' (automatisch)') : null,
+            override.background ? el('span', { class: 'changed' }, 'angepasst') : null));
+    }
 
     renderYoutube($('.youtube', node), event);
 
     // Details
     const details = $('.details-body', node);
     const block = (title, content) => el('div', {}, el('h3', {}, title), el('pre', {}, content || '—'));
-    details.append(
-        block('Event-Notiz', event.note),
-        block(`Agenda-Eintrag${event.sermonItem?.title ? ` „${event.sermonItem.title}“` : ''}`,
-            event.sermonItem ? [event.sermonItem.note, event.sermonItem.responsible && `Verantwortlich: ${event.sermonItem.responsible}`].filter(Boolean).join('\n\n') : 'Kein Predigt-Eintrag gefunden'),
-        block('YouTube-Titel', event.title),
-        block('YouTube-Beschreibung', event.description),
-    );
+    if (event.manual) {
+        $('.details summary', node).textContent = 'Notiz & YouTube-Texte';
+        details.append(block('Notiz', event.note));
+    } else {
+        details.append(
+            block('Event-Notiz', event.note),
+            block(`Agenda-Eintrag${event.sermonItem?.title ? ` „${event.sermonItem.title}“` : ''}`,
+                event.sermonItem ? [event.sermonItem.note, event.sermonItem.responsible && `Verantwortlich: ${event.sermonItem.responsible}`].filter(Boolean).join('\n\n') : 'Kein Predigt-Eintrag gefunden'),
+        );
+    }
+    details.append(block('YouTube-Titel', event.title), block('YouTube-Beschreibung', event.description));
 
     // Editor
     const editor = $('.editor', node);
     const editBtn = $('.edit-btn', node);
+    const closedLabel = event.manual ? 'Bearbeiten' : 'Anpassen';
+    editBtn.textContent = closedLabel;
     if (!event.ctInfo) editBtn.hidden = true;
-    editBtn.addEventListener('click', () => toggleEditor(node, event, editor.hidden));
-    if (state.openEditor === event.id) toggleEditor(node, event, true);
+    const toggle = open => {
+        editor.hidden = !open;
+        editBtn.textContent = open ? `${closedLabel} schließen` : closedLabel;
+        state.openEditor = open ? event.id : (state.openEditor === event.id ? null : state.openEditor);
+        if (open && !editor.dataset.ready) {
+            editor.dataset.ready = '1';
+            setupEditor(editor, { event, onDone: () => { state.openEditor = null; } });
+        }
+    };
+    editBtn.addEventListener('click', () => toggle(editor.hidden));
+    $('.cancel-btn', editor).addEventListener('click', () => {
+        state.openEditor = null;
+        renderEvents();
+    });
+    if (state.openEditor === event.id) toggle(true);
     return node;
 }
 
@@ -266,38 +396,62 @@ function renderYoutube(box, event) {
     }
 }
 
-// ---------- Editor ----------
-function formValues(form) {
-    const values = {};
-    for (const [key] of FIELDS) values[key] = form.elements[key].value;
-    values.force = form.elements.force.checked;
-    return values;
-}
+// ---------- Editor (ChurchTools-Anpassung, manueller Stream, neuer Stream) ----------
 
-function toggleEditor(node, event, open) {
-    const form = $('.editor', node);
-    const editBtn = $('.edit-btn', node);
-    form.hidden = !open;
-    editBtn.textContent = open ? 'Anpassen schließen' : 'Anpassen';
-    state.openEditor = open ? event.id : (state.openEditor === event.id ? null : state.openEditor);
-    if (!open || form.dataset.ready) return;
-    form.dataset.ready = '1';
+/**
+ * @param {HTMLFormElement} form
+ * @param {{event?: object, onDone: () => void}} options  ohne event = neuer Stream
+ */
+function setupEditor(form, { event, onDone }) {
+    const isNew = !event;
+    const manual = isNew || Boolean(event.manual);
+    const override = (!isNew && event.override) || {};
+    const info = event?.info || {};
 
-    const ct = event.ctInfo;
-    const override = event.override || {};
-    for (const [key] of FIELDS) {
-        const input = form.elements[key];
-        input.value = override[key] || '';
-        input.placeholder = ct[key] || '';
+    form.querySelectorAll('.manual-only').forEach(n => { n.hidden = !manual; });
+    $('.reset-btn', form).hidden = manual || !Object.keys(override).length;
+    $('.delete-btn', form).hidden = !manual || isNew;
+    $('button[type=submit]', form).textContent = isNew ? 'Stream anlegen' : 'Speichern & anwenden';
+    if (manual) $('textarea[name=sermonSubject] + small', form).textContent = 'Enter = eigener Zeilenumbruch im Thumbnail.';
+
+    if (manual) {
+        form.elements.date.value = info.isoDate || nextSunday();
+        form.elements.time.value = info.startTime || '10:00';
+        form.elements.date.required = true;
+        form.elements.time.required = true;
+        for (const [key] of FIELDS) form.elements[key].value = info[key] || '';
+        if (isNew) form.elements.eventName.value = 'Gottesdienst';
+        form.elements.note.value = event?.note || '';
+    } else {
+        const ct = event.ctInfo;
+        for (const [key] of FIELDS) {
+            const input = form.elements[key];
+            input.value = override[key] || '';
+            input.placeholder = ct[key] || '';
+        }
+        const needsForce = event.problems.some(p => p.includes('Agenda')) || override.force;
+        $('.force-row', form).hidden = !needsForce;
+        form.elements.force.checked = Boolean(override.force);
     }
-    const needsForce = event.problems.some(p => p.includes('Agenda')) || override.force;
-    $('.force-row', form).hidden = !needsForce;
-    form.elements.force.checked = Boolean(override.force);
-    $('.reset-btn', form).hidden = !Object.keys(override).length;
+
+    const values = () => {
+        const result = {};
+        for (const [key] of FIELDS) result[key] = form.elements[key].value;
+        result.background = form.querySelector('input[name=background]:checked')?.value || '';
+        if (manual) {
+            result.date = form.elements.date.value;
+            result.time = form.elements.time.value;
+            result.note = form.elements.note.value;
+        } else {
+            result.force = form.elements.force.checked;
+        }
+        return result;
+    };
 
     // Live-Vorschau
     const previewImg = $('.preview', form);
     const previewState = $('.preview-state', form);
+    const previewUrl = manual ? '/api/preview' : `/api/events/${event.id}/preview`;
     let timer = null;
     let counter = 0;
     const refresh = () => {
@@ -306,41 +460,78 @@ function toggleEditor(node, event, open) {
             const current = ++counter;
             previewState.textContent = 'Vorschau wird erstellt …';
             try {
-                const blob = await api('POST', `/api/events/${event.id}/preview`, formValues(form));
+                const blob = await api('POST', previewUrl, values());
                 if (current !== counter) return;
                 if (previewImg.src) URL.revokeObjectURL(previewImg.src);
                 previewImg.src = URL.createObjectURL(blob);
-                previewState.textContent = 'Vorschau – noch nicht gespeichert';
+                previewState.textContent = isNew ? 'Vorschau – noch nicht angelegt' : 'Vorschau – noch nicht gespeichert';
             } catch (err) {
                 previewState.textContent = 'Vorschau fehlgeschlagen: ' + err.message;
             }
         }, 350);
     };
-    form.addEventListener('input', refresh);
+    renderPicker($('.bg-picker', form), (manual ? info.background : override.background) || '', refresh);
+    form.addEventListener('input', e => { if (e.target.type !== 'file') refresh(); });
     refresh();
 
     const buttons = [...form.querySelectorAll('button')];
+    const finish = async () => {
+        onDone();
+        await Promise.all([loadEvents(), loadStatus()]);
+    };
     form.addEventListener('submit', async e => {
         e.preventDefault();
         await withBusy(buttons, async () => {
-            const result = await api('PUT', `/api/events/${event.id}/override`, formValues(form));
-            state.openEditor = null;
+            let result;
+            if (isNew) result = await api('POST', '/api/manual', values());
+            else if (manual) result = await api('PUT', `/api/manual/${event.id}`, values());
+            else result = await api('PUT', `/api/events/${event.id}/override`, values());
             if (result.stats?.failed) showAlert('Gespeichert, aber beim Abgleich gab es einen Fehler – siehe Protokoll.', 'warn');
-            await Promise.all([loadEvents(), loadStatus()]);
+            else if (isNew) showAlert('Stream angelegt.', 'ok');
+            await finish();
+            if (isNew) document.querySelector(`.event[data-id="${CSS.escape(result.id)}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         });
     });
     $('.reset-btn', form).addEventListener('click', async () => {
         if (!confirm('Alle Anpassungen für dieses Event verwerfen und wieder die Werte aus ChurchTools verwenden?')) return;
         await withBusy(buttons, async () => {
             await api('DELETE', `/api/events/${event.id}/override`);
-            state.openEditor = null;
-            await Promise.all([loadEvents(), loadStatus()]);
+            await finish();
         });
     });
-    $('.cancel-btn', form).addEventListener('click', () => {
-        state.openEditor = null;
-        renderEvents();
+    $('.delete-btn', form).addEventListener('click', async () => {
+        const ytNote = event.youtubeId ? '\n\nDer YouTube-Livestream wird ebenfalls gelöscht (sofern er noch nicht live war).' : '';
+        if (!confirm(`Den Stream „${event.name}“ am ${formatWhen(event.startDate)} löschen?${ytNote}`)) return;
+        await withBusy(buttons, async () => {
+            await api('DELETE', `/api/manual/${event.id}`);
+            await finish();
+        });
     });
+}
+
+function openNewStream() {
+    if (state.newOpen) {
+        $('#new-stream .event')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+    }
+    state.newOpen = true;
+    const template = $('#event-template').content.firstElementChild.cloneNode(true);
+    const form = $('.editor', template);
+    form.hidden = false;
+    const close = () => {
+        state.newOpen = false;
+        $('#new-stream').replaceChildren();
+    };
+    const card = el('article', { class: 'event new-stream' },
+        el('h2', {}, 'Neuer Livestream'),
+        el('p', { class: 'muted' }, 'Für Streams, die nicht in ChurchTools stehen. Das Thumbnail wird sofort erstellt'
+            + (state.status?.youtube.enabled ? ' und der Livestream auf YouTube angelegt (nicht gelistet).' : '.')),
+        form);
+    $('#new-stream').replaceChildren(card);
+    setupEditor(form, { onDone: close });
+    $('.cancel-btn', form).addEventListener('click', close);
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    form.elements.sermonSubject.focus({ preventScroll: true });
 }
 
 // ---------- Laden ----------
@@ -366,6 +557,7 @@ $('#sync-btn').addEventListener('click', async e => {
         await Promise.all([loadStatus(), loadEvents()]);
     });
 });
+$('#new-btn').addEventListener('click', openNewStream);
 
 async function poll() {
     try {

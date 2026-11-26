@@ -17,17 +17,26 @@
         </div>
         <div class="topbar-actions">
             <span id="status-pill" class="pill">–</span>
+            <button id="new-btn" class="btn" type="button">+ Neuer Stream</button>
             <button id="sync-btn" class="btn primary" type="button">Jetzt abgleichen</button>
         </div>
     </header>
 
     <main>
         <div id="alerts"></div>
+        <section id="new-stream"></section>
         <section id="events" aria-live="polite"></section>
 
         <details id="other-events" class="panel" hidden>
             <summary>Ohne Livestream <span id="other-count" class="muted"></span></summary>
             <ul id="other-list" class="plain-list"></ul>
+        </details>
+
+        <details id="bg-panel" class="panel">
+            <summary>Hintergründe <span id="bg-count" class="muted"></span></summary>
+            <p class="muted panel-hint">Eigene Hintergründe werden auf 1920 × 1080 zugeschnitten. Heißt ein Hintergrund wie eine
+                Gottesdienst-Art (z. B. „jugendgottesdienst“), wird er dafür automatisch verwendet.</p>
+            <div id="bg-grid" class="bg-grid"></div>
         </details>
 
         <details class="panel">
@@ -64,6 +73,14 @@
             <form class="editor" hidden>
                 <div class="editor-grid">
                     <div class="editor-fields">
+                        <div class="date-row manual-only">
+                            <label>Datum
+                                <input type="date" name="date">
+                            </label>
+                            <label>Uhrzeit
+                                <input type="time" name="time" step="300">
+                            </label>
+                        </div>
                         <label>Thema
                             <textarea name="sermonSubject" rows="3"></textarea>
                             <small>Enter = eigener Zeilenumbruch im Thumbnail. Leer lassen = Wert aus ChurchTools.</small>
@@ -78,6 +95,13 @@
                         <label>Predigttext
                             <input name="scripture" autocomplete="off">
                         </label>
+                        <fieldset class="bg-field">
+                            <legend>Hintergrund</legend>
+                            <div class="bg-picker"></div>
+                        </fieldset>
+                        <label class="manual-only">Notiz <small>(nur für dich, erscheint nirgends)</small>
+                            <textarea name="note" rows="2"></textarea>
+                        </label>
                         <label class="check force-row" hidden>
                             <input type="checkbox" name="force">
                             Trotz fehlender/offener Agenda erzeugen
@@ -91,6 +115,7 @@
                 <div class="actions">
                     <button class="btn primary" type="submit">Speichern &amp; anwenden</button>
                     <button class="btn reset-btn" type="button">Auf ChurchTools-Werte zurücksetzen</button>
+                    <button class="btn danger delete-btn" type="button" hidden>Stream löschen</button>
                     <button class="btn ghost cancel-btn" type="button">Abbrechen</button>
                 </div>
             </form>

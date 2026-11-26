@@ -1,6 +1,7 @@
 const { createCanvas, loadImage, registerFont } = require('canvas');
 const fs = require('fs');
 const path = require('path');
+const backgrounds = require('./backgrounds');
 
 const ASSETS = path.join(__dirname, 'assets');
 const WIDTH = 1920;
@@ -24,13 +25,6 @@ registerFont(path.join(ASSETS, 'Ubuntu-Bold.ttf'), { family: FONT_FAMILY });
 
 function font(sizePx) {
     return `${sizePx}px "${FONT_FAMILY}"`;
-}
-
-function selectBackground(eventType) {
-    // Nur einfache Dateinamen zulassen (Art kann im Dashboard frei eingegeben werden)
-    const file = eventType.toLowerCase().replace(/[^a-z0-9äöüß_-]/g, '') + '.png';
-    const candidate = path.join(ASSETS, 'backgrounds', file);
-    return fs.existsSync(candidate) ? candidate : path.join(ASSETS, 'backgrounds', 'default.png');
 }
 
 /** Alle Möglichkeiten, die Wörter auf genau n Zeilen zu verteilen. */
@@ -109,22 +103,16 @@ function writeText(ctx, { date, event, subject }) {
     ctx.restore();
 }
 
-/** Verfügbare Hintergründe (Dateinamen ohne .png), z. B. für die Auswahl im Dashboard. */
-function listBackgrounds() {
-    return fs.readdirSync(path.join(ASSETS, 'backgrounds'))
-        .filter(f => f.toLowerCase().endsWith('.png'))
-        .map(f => f.slice(0, -4));
-}
-
 /**
  * Rendert ein Thumbnail als JPEG-Buffer.
- * @param {{date: string, event: string, subject?: string}} info
+ * @param {{date: string, event: string, subject?: string, background?: string}} info
+ *        background: gewählter Hintergrund (Name); leer = passend zur Art
  */
 async function render(info) {
     const thumbnail = createCanvas(WIDTH, HEIGHT);
     const ctx = thumbnail.getContext('2d');
 
-    ctx.drawImage(await loadImage(selectBackground(info.event)), 0, 0, WIDTH, HEIGHT);
+    ctx.drawImage(await loadImage(backgrounds.resolve(info.background, info.event).file), 0, 0, WIDTH, HEIGHT);
     ctx.drawImage(await loadImage(path.join(ASSETS, 'logo.png')), 0, 0, WIDTH, HEIGHT);
     writeText(ctx, info);
     return thumbnail.toBuffer('image/jpeg', { quality: 0.92 });
@@ -138,4 +126,4 @@ async function create(info, outFile) {
     return outFile;
 }
 
-module.exports = { create, render, selectBackground, listBackgrounds, RENDER_VERSION };
+module.exports = { create, render, RENDER_VERSION };
