@@ -345,6 +345,11 @@ function renderEvent(event) {
         }
     };
     editBtn.addEventListener('click', () => toggle(editor.hidden));
+    if (event.manual) {
+        const deleteBtn = el('button', { class: 'btn danger', type: 'button' }, 'Löschen');
+        deleteBtn.addEventListener('click', () => deleteManualStream(event, [deleteBtn, editBtn]));
+        editBtn.after(deleteBtn);
+    }
     $('.cancel-btn', editor).addEventListener('click', () => {
         state.openEditor = null;
         renderEvents();
@@ -411,7 +416,7 @@ function setupEditor(form, { event, onDone }) {
     form.querySelectorAll('.manual-only').forEach(n => { n.hidden = !manual; });
     $('.reset-btn', form).hidden = manual || !Object.keys(override).length;
     $('.delete-btn', form).hidden = !manual || isNew;
-    $('button[type=submit]', form).textContent = isNew ? 'Stream anlegen' : 'Speichern & anwenden';
+    $('button[type=submit]', form).textContent = isNew ? (state.status?.youtube.enabled ? 'Anlegen (nicht gelistet)' : 'Anlegen') : 'Speichern & anwenden';
     if (manual) $('textarea[name=sermonSubject] + small', form).textContent = 'Enter = eigener Zeilenumbruch im Thumbnail.';
 
     if (manual) {
@@ -487,7 +492,7 @@ function setupEditor(form, { event, onDone }) {
             else if (manual) result = await api('PUT', `/api/manual/${event.id}`, values());
             else result = await api('PUT', `/api/events/${event.id}/override`, values());
             if (result.stats?.failed) showAlert('Gespeichert, aber beim Abgleich gab es einen Fehler – siehe Protokoll.', 'warn');
-            else if (isNew) showAlert('Stream angelegt.', 'ok');
+            else if (isNew) showAlert(state.status?.youtube.enabled ? 'Gottesdienst angelegt – der Livestream ist nicht gelistet, bis du ihn öffentlich schaltest.' : 'Gottesdienst angelegt.', 'ok');
             await finish();
             if (isNew) document.querySelector(`.event[data-id="${CSS.escape(result.id)}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         });
@@ -499,13 +504,19 @@ function setupEditor(form, { event, onDone }) {
             await finish();
         });
     });
-    $('.delete-btn', form).addEventListener('click', async () => {
-        const ytNote = event.youtubeId ? '\n\nDer YouTube-Livestream wird ebenfalls gelöscht (sofern er noch nicht live war).' : '';
-        if (!confirm(`Den Stream „${event.name}“ am ${formatWhen(event.startDate)} löschen?${ytNote}`)) return;
-        await withBusy(buttons, async () => {
-            await api('DELETE', `/api/manual/${event.id}`);
-            await finish();
-        });
+    $('.delete-btn', form).addEventListener('click', () => deleteManualStream(event, buttons, onDone));
+}
+
+/** Löscht einen im Dashboard angelegten Gottesdienst (Thumbnail + YouTube-Livestream, falls noch nicht live). */
+async function deleteManualStream(event, buttons, onDone = () => {}) {
+    const ytNote = event.youtubeId ? '\n\nDer YouTube-Livestream wird ebenfalls gelöscht (sofern er noch nicht live war).' : '';
+    if (!confirm(`Den Gottesdienst „${event.name}“ am ${formatWhen(event.startDate)} löschen?${ytNote}`)) return;
+    await withBusy(buttons, async () => {
+        await api('DELETE', `/api/manual/${event.id}`);
+        if (state.openEditor === event.id) state.openEditor = null;
+        onDone();
+        showAlert(`„${event.name}“ wurde gelöscht.`, 'ok');
+        await Promise.all([loadEvents(), loadStatus()]);
     });
 }
 
@@ -523,9 +534,13 @@ function openNewStream() {
         $('#new-stream').replaceChildren();
     };
     const card = el('article', { class: 'event new-stream' },
-        el('h2', {}, 'Neuer Livestream'),
-        el('p', { class: 'muted' }, 'Für Streams, die nicht in ChurchTools stehen. Das Thumbnail wird sofort erstellt'
-            + (state.status?.youtube.enabled ? ' und der Livestream auf YouTube angelegt (nicht gelistet).' : '.')),
+        el('h2', {}, 'Neuer Gottesdienst'),
+        el('p', { class: 'muted' }, 'Für Gottesdienste, die nicht in ChurchTools stehen. Das Thumbnail wird sofort erstellt.'),
+        state.status?.youtube.enabled
+            ? el('div', { class: 'alert warn' },
+                'Der Livestream wird auf YouTube erst einmal als „nicht gelistet“ angelegt. '
+                + 'Prüfe ihn hier und in YouTube Studio und schalte ihn dann mit „Öffentlich schalten“ frei.')
+            : null,
         form);
     $('#new-stream').replaceChildren(card);
     setupEditor(form, { onDone: close });
