@@ -218,6 +218,14 @@ function start({ port, host, runSync, getLog, log: logLine = console.log }) {
             if (req.method !== 'GET' && req.headers['x-thumbgen'] !== '1') throw new HttpError(403, 'Fehlender Header');
 
             const url = new URL(req.url, `http://${req.headers.host}`);
+            if (req.method === 'GET' && url.pathname === '/churchtools-logo') {
+                // Optional: Logo für den Button, wenn es in assets/ liegt
+                const logo = [['churchtools-logo.svg', 'image/svg+xml'], ['churchtools-logo.png', 'image/png']]
+                    .map(([file, type]) => [path.join(__dirname, 'assets', file), type])
+                    .find(([file]) => fs.existsSync(file));
+                if (!logo) throw new HttpError(404, 'Kein Logo hinterlegt');
+                return send(res, 200, fs.readFileSync(logo[0]), logo[1]);
+            }
             if (req.method === 'GET' && STATIC_FILES[url.pathname]) {
                 const [file, type] = STATIC_FILES[url.pathname];
                 return send(res, 200, fs.readFileSync(path.join(STATIC_DIR, file)), type);

@@ -344,3 +344,5 @@ dialog.lightbox img { display: block; max-width: 92vw; max-height: 88vh; border-
 .bg-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; }
 .bg-tile .bg-name { min-width: 0; }
 .bg-tile img { cursor: zoom-in; }
+.btn:has(.btn-icon:not([hidden])) { display: inline-flex; align-items: center; gap: 8px; }
+.btn-icon { width: 20px; height: 20px; padding: 2px; border-radius: 5px; background: #fff; object-fit: contain; }

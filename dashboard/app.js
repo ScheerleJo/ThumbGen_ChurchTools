@@ -231,7 +231,7 @@ function renderEvents() {
 
     if (!state.events.length) {
         container.replaceChildren(el('div', { class: 'empty' },
-            'Noch keine Daten. Klicke auf „Jetzt abgleichen“, um die Events aus ChurchTools zu laden.'));
+            'Noch keine Daten. Klicke auf „ChurchTools abfragen“, um die Events zu laden.'));
     } else if (!streamed.length) {
         container.replaceChildren(el('div', { class: 'empty' }, 'Im Zeitraum ist kein Event mit Livestream geplant.'));
     } else {
