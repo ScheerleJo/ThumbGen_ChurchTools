@@ -201,8 +201,56 @@ async function deleteBroadcast(id) {
     return 'deleted';
 }
 
+/**
+ * Status mehrerer Broadcasts auf einmal (1 Quota-Einheit pro 50 IDs).
+ * @returns {Promise<Record<string, {privacy: string, lifeCycle: string, title: string, scheduledStart: string, boundStreamId: string}>>}
+ */
+async function getStatuses(ids) {
+    const result = {};
+    for (let i = 0; i < ids.length; i += 50) {
+        const res = await api().liveBroadcasts.list({
+            part: ['id', 'snippet', 'status', 'contentDetails'],
+            id: ids.slice(i, i + 50),
+            maxResults: 50,
+        });
+        for (const b of res.data.items || []) {
+            result[b.id] = {
+                privacy: b.status?.privacyStatus,
+                lifeCycle: b.status?.lifeCycleStatus,
+                title: b.snippet?.title,
+                scheduledStart: b.snippet?.scheduledStartTime,
+                boundStreamId: b.contentDetails?.boundStreamId || '',
+            };
+        }
+    }
+    return result;
+}
+
+/** Sichtbarkeit eines Broadcasts ändern (public | unlisted | private). */
+async function setPrivacy(id, privacy) {
+    if (!['public', 'unlisted', 'private'].includes(privacy)) throw new Error('Ungültige Sichtbarkeit: ' + privacy);
+    const broadcast = await getBroadcast(id);
+    if (!broadcast) throw new Error('Livestream existiert nicht mehr auf YouTube');
+    // Beim Update von "status" werden alle veränderbaren Felder überschrieben -> Kinder-Einstellung mitgeben
+    await api().liveBroadcasts.update({
+        part: ['status'],
+        requestBody: {
+            id,
+            status: { privacyStatus: privacy, selfDeclaredMadeForKids: broadcast.status?.selfDeclaredMadeForKids ?? false },
+        },
+    });
+    return (await getBroadcast(id))?.status?.privacyStatus;
+}
+
 function watchUrl(id) {
     return `https://youtu.be/${id}`;
 }
 
-module.exports = { isEnabled, settings, authorize, listStreams, upsertBroadcast, deleteBroadcast, watchUrl, api };
+function studioUrl(id) {
+    return `https://studio.youtube.com/video/${id}/livestreaming`;
+}
+
+module.exports = {
+    isEnabled, settings, authorize, listStreams, upsertBroadcast, deleteBroadcast,
+    getStatuses, setPrivacy, watchUrl, studioUrl, api,
+};

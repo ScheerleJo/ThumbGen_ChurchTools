@@ -4,10 +4,12 @@ const ct = require('./churchtools');
 const sync = require('./sync');
 const text = require('./text');
 const youtube = require('./youtube');
+const dashboard = require('./dashboard');
 
 const HELP = `Verwendung: node index.js [Optionen]
 
   --watch           Dauerhaft laufen und ChurchTools regelmäßig prüfen
+  --dashboard       Web-Dashboard starten (http://127.0.0.1:3000, Port: DASHBOARD_PORT)
   --interval <min>  Prüfintervall im Watch-Modus (Standard: WATCH_INTERVAL_MINUTES oder 15)
   --days <n>        Events von heute bis in n Tagen (Standard: 7)
   --event <id>      Nur dieses Event (ID aus ChurchTools)
@@ -42,11 +44,14 @@ async function runCycle(args, log) {
         youtube.settings(); // Konfiguration prüfen
         youtube.api(); // wirft, wenn noch nicht autorisiert
     }
-    await ct.login({
-        loginToken: process.env.CT_LOGIN_TOKEN,
-        username: process.env.CT_USERNAME,
-        password: process.env.CT_PASSWORD,
-    });
+    // Ein im Dashboard angelegter Stream braucht ChurchTools nicht
+    if (!(args.event && sync.isManualId(args.event))) {
+        await ct.login({
+            loginToken: process.env.CT_LOGIN_TOKEN,
+            username: process.env.CT_USERNAME,
+            password: process.env.CT_PASSWORD,
+        });
+    }
     const stats = await sync.syncOnce({
         days: Number(args.days),
         eventId: args.event,
@@ -62,23 +67,47 @@ async function runCycle(args, log) {
     return stats;
 }
 
-async function watch(args) {
+// Letzte Log-Zeilen für das Dashboard
+const logLines = [];
+function log(msg) {
+    const line = `[${timestamp()}] ${msg}`;
+    console.log(line);
+    logLines.push(line);
+    if (logLines.length > 200) logLines.shift();
+}
+
+/** Dauerbetrieb: Watch-Modus und/oder Dashboard. */
+async function serve(args) {
     const minutes = Number(args.interval || process.env.WATCH_INTERVAL_MINUTES || 15);
-    if (!(minutes > 0)) throw new Error('Ungültiges Intervall: ' + args.interval);
-    const log = msg => console.log(`[${timestamp()}] ${msg}`);
-    log(`Watch-Modus: prüfe alle ${minutes} Minuten (Strg+C zum Beenden).`);
+    if (args.watch && !(minutes > 0)) throw new Error('Ungültiges Intervall: ' + args.interval);
 
     let timer = null;
+    let server = null;
     let stopping = false;
     const stop = () => {
         if (stopping) return;
         stopping = true;
         clearTimeout(timer);
+        server?.close();
         log('Beendet.');
     };
     process.on('SIGINT', stop);
     process.on('SIGTERM', stop);
 
+    if (args.dashboard) {
+        const port = Number(process.env.DASHBOARD_PORT || 3000);
+        const host = process.env.DASHBOARD_HOST || '127.0.0.1';
+        server = await dashboard.start({
+            port, host,
+            // Vom Dashboard ausgelöst: einzelnes Event oder alles, nie Dry-Run/Rebuild
+            runSync: eventId => runCycle({ ...args, event: eventId, rebuild: false, 'dry-run': false }, log),
+            getLog: () => logLines,
+            log,
+        });
+        log(`Dashboard läuft auf http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`);
+    }
+
+    if (args.watch) log(`Watch-Modus: prüfe alle ${minutes} Minuten (Strg+C zum Beenden).`);
     let rebuild = args.rebuild; // --rebuild nur beim ersten Durchlauf
     const tick = async () => {
         try {
@@ -88,7 +117,7 @@ async function watch(args) {
             log(`Fehler beim Abgleich: ${err.message}`);
         }
         rebuild = false;
-        if (!stopping) timer = setTimeout(tick, minutes * 60 * 1000);
+        if (args.watch && !stopping) timer = setTimeout(tick, minutes * 60 * 1000);
     };
     await tick();
 }
@@ -97,6 +126,7 @@ async function main() {
     const { values: args } = parseArgs({
         options: {
             watch: { type: 'boolean', default: false },
+            dashboard: { type: 'boolean', default: false },
             interval: { type: 'string' },
             days: { type: 'string', default: '7' },
             event: { type: 'string' },
@@ -121,7 +151,7 @@ async function main() {
     }
 
     ct.init({ baseUrl: process.env.CT_BASE_URL, verbose: args.verbose });
-    if (args.watch) return watch(args);
+    if (args.watch || args.dashboard) return serve(args);
 
     const stats = await runCycle(args, console.log);
     if (stats.failed) process.exitCode = 1;
